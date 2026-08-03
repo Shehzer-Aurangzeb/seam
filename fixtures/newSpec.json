@@ -1,0 +1,106 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Fixture API", "version": "1.1.0" },
+  "paths": {
+    "/asset-records": {
+      "parameters": [{ "name": "tenant", "in": "header", "schema": { "type": "string" } }],
+      "summary": "Asset records collection",
+      "get": {
+        "operationId": "listAssetRecords",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["active", "archived"] }
+          }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "operationId": "createAssetRecord",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "assetTag", "quantity"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "quantity": { "type": "integer" },
+                  "assetTag": { "type": "string" },
+                  "notes": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/asset-records/{id}": {
+      "get": {
+        "operationId": "getAssetRecord",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceAssetRecord",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "state": { "type": "string", "enum": ["draft", "active", "pending"] } }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OK" } }
+      },
+      "patch": {
+        "operationId": "patchAssetRecord",
+        "description": "Partially update an existing asset record.",
+        "responses": { "200": { "description": "OK" } }
+      },
+      "delete": {
+        "operationId": "deleteAssetRecord",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["actor", "reason"],
+                "properties": {
+                  "reason": { "type": "string" },
+                  "actor": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "204": { "description": "No Content" } }
+      }
+    },
+    "/reports": {
+      "post": {
+        "operationId": "createReport",
+        "responses": { "202": { "description": "Accepted" } }
+      }
+    }
+  }
+}

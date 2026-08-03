@@ -1,0 +1,25 @@
+{
+  "name": "seam",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Consumption-aware API drift detection — alerts only on backend changes the frontend actually uses.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "init": "node --env-file=.env node_modules/tsx/dist/cli.mjs src/cli.ts init",
+    "check": "node --env-file=.env node_modules/tsx/dist/cli.mjs src/cli.ts",
+    "test": "node --import tsx src/multiBackend.test.ts && node --import tsx src/consumption.test.ts && tsc"
+  },
+  "packageManager": "pnpm@10.13.1",
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@clack/prompts": "^1.7.0",
+    "microdiff": "^1.5.0",
+    "zod": "^4.4.3"
+  }
+}

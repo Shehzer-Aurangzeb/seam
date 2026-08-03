@@ -1,0 +1,33 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Prefixed Fixture API", "version": "1.1.0" },
+  "paths": {
+    "/api/v1/files/upload": {
+      "post": {
+        "operationId": "uploadFile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "contentType"],
+                "properties": {
+                  "file": { "type": "string" },
+                  "contentType": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/api/v1/files/{id}": {
+      "get": {
+        "operationId": "getFile",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

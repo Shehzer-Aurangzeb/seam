@@ -1,0 +1,18 @@
+node_modules/
+
+# Holds ANTHROPIC_API_KEY — init reads your codebase with Claude.
+.env
+
+# Per-config spec baselines. Local to a checkout today; the app will own this state.
+.driftcheck/
+
+# init never overwrites an existing config — it writes a draft beside it for you to merge.
+config/*.draft.json
+
+# Your configs describe YOUR frontend's API surface. They belong in that project, not in this repo.
+# The README documents both shapes; fixtures/sample-frontend is what the tests run against.
+config/*.config.json
+config/backends.json
+
+.claude/settings.local.json
+.DS_Store

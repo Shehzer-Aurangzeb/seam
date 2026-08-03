@@ -102,9 +102,12 @@ function step(schema: unknown, name: string, spec: unknown): FieldResult {
     if (properties === undefined) return { status: 'absent' };
   }
 
-  // A free-form object, or a map keyed by anything (`additionalProperties` as a schema), can hold
-  // this field without declaring it. Only an object that spells out its properties AND forbids
-  // extras can prove absence.
+  // An object that spells out its `properties` proves absence, INCLUDING when it says nothing about
+  // `additionalProperties`. Strict JSON Schema would default that to true, but an OpenAPI response is
+  // a descriptive contract, not a validator: generated specs almost never emit
+  // `additionalProperties: false` (0 of 6 schemas in the Swagger Petstore do), so demanding it would
+  // make verify silent on essentially every real spec. Only an EXPLICIT `true` or a schema — a
+  // deliberate map or free-form object — can still hide the field.
   if (properties === undefined) {
     // A declared scalar holds no members at all, so absence IS provable here. This is the rule that
     // catches a field demoted from an object to an id string: `customer.email` where customer is now

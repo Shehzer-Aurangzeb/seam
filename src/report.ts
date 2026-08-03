@@ -1,7 +1,9 @@
 import type { Difference } from 'microdiff';
 import type { ClassifiedChange, Severity } from './classify.js';
-import { colorEnabled } from './color.js';
+import { colorEnabled, dim, green } from './color.js';
+import type { ConsumedRoute } from './config.js';
 import type { ExplainResult } from './explain.js';
+import type { Finding } from './verify.js';
 
 const GROUPS: Severity[] = ['breaking', 'relevant', 'ignore'];
 
@@ -33,6 +35,44 @@ function formatRawChange(change: Difference): string {
 
 const heading = (change: ClassifiedChange) =>
   `${SYMBOL[change.kind]} ${change.kind.toUpperCase()} ${change.method} ${change.path}`;
+
+/**
+ * `verify`'s report. One line per finding — there is no raw diff entry behind any of them, because
+ * nothing was diffed: each is a disagreement with the spec as it stands.
+ *
+ * The coverage note is not decoration. "Everything agrees" reads as a clean bill of health, and a
+ * config with no `responseFields` checked no response field at all — saying so is the difference
+ * between a green run and a green run that means something.
+ */
+export function printFindings(findings: Finding[], consumes: ConsumedRoute[]): void {
+  const of = (severity: Severity) => findings.filter((f) => f.severity === severity);
+  const scoped = consumes.filter((route) => route.responseFields?.length).length;
+
+  if (findings.length === 0) {
+    console.log(green(`All ${consumes.length} consumed route(s) agree with the spec.`));
+  } else {
+    console.log(
+      `Verified ${consumes.length} consumed route(s) — ${of('breaking').length} breaking, ` +
+        `${of('relevant').length} relevant:`,
+    );
+    for (const severity of GROUPS) {
+      const group = of(severity);
+      if (group.length === 0) continue;
+      console.log(`\n${paint(`${severity.toUpperCase()} (${group.length})`, severity)}`);
+      for (const finding of group) {
+        console.log(`  ${paint(`${finding.method} ${finding.path}`, severity)} — ${finding.reason}`);
+      }
+    }
+  }
+
+  console.log(
+    dim(
+      scoped === 0
+        ? `\nNo route declares responseFields, so no response field was checked — only route existence and headers. Re-run init to populate them.`
+        : `\n${scoped} of ${consumes.length} route(s) declare responseFields; the rest were checked for existence and headers only.`,
+    ),
+  );
+}
 
 export function printReport(
   classified: ClassifiedChange[],

@@ -2,14 +2,18 @@
 import { readFileSync } from 'node:fs';
 import { isCancel, select } from '@clack/prompts';
 import { bold, cyan, dim, green, red } from './color.js';
-import { CONFIG_DIR, listConfigs, loadConfig, resolveConfigPath } from './config.js';
+import { type Config, CONFIG_DIR, listConfigs, loadConfig, resolveConfigPath } from './config.js';
 import { fetchSpec } from './fetchSpec.js';
 import { classifyAll } from './classify.js';
 import { diffSpecs } from './diff.js';
 import { explainChanges } from './explain.js';
 import { runInit } from './init.js';
-import { printReport } from './report.js';
+import { printFindings, printReport } from './report.js';
 import { readSnapshot, snapshotPath, writeSnapshot } from './snapshot.js';
+import { verify } from './verify.js';
+
+/** Exit 2, never 1: a caller has to tell "drift found" apart from "the tool broke". */
+const DRIFT_EXIT = 2;
 
 function countPaths(spec: unknown): number {
   const paths = (spec as { paths?: unknown } | null)?.paths;
@@ -50,6 +54,14 @@ async function pickConfig(): Promise<string> {
   return choice;
 }
 
+/** Which backend, and against what — the same four lines whether we are checking or verifying. */
+function printConfigHeader(configPath: string, config: Config): void {
+  console.log(`Config: ${bold(configPath)}`);
+  console.log(`Spec URL: ${cyan(config.specUrl)}`);
+  if (config.basePath) console.log(`Base path: ${cyan(config.basePath)}`);
+  if (config.globalHeaders?.length) console.log(`Global headers: ${cyan(config.globalHeaders.join(', '))}`);
+}
+
 async function main() {
   try {
     const [subcommand, ...rest] = process.argv.slice(2);
@@ -58,15 +70,24 @@ async function main() {
       return;
     }
 
+    // verify asks whether the frontend and the spec agree RIGHT NOW. One spec, no snapshot read and
+    // none written — the answer must not depend on when it was last run.
+    if (subcommand === 'verify') {
+      const configPath = rest[0] ?? (await pickConfig());
+      const config = loadConfig(configPath);
+      printConfigHeader(configPath, config);
+      const findings = verify(config, await fetchSpec(config.specUrl));
+      printFindings(findings, config.consumes);
+      if (findings.some((f) => f.severity === 'breaking')) process.exitCode = DRIFT_EXIT;
+      return;
+    }
+
     // `driftcheck [config]` and `driftcheck check [config]` both work; each config is one backend.
     // An explicit argument always runs directly — the picker is a no-arg convenience only.
     const explicit = subcommand === 'check' ? rest[0] : subcommand;
     const configPath = explicit ?? (await pickConfig());
     const config = loadConfig(configPath);
-    console.log(`Config: ${bold(configPath)}`);
-    console.log(`Spec URL: ${cyan(config.specUrl)}`);
-    if (config.basePath) console.log(`Base path: ${cyan(config.basePath)}`);
-    if (config.globalHeaders?.length) console.log(`Global headers: ${cyan(config.globalHeaders.join(', '))}`);
+    printConfigHeader(configPath, config);
     console.log(`Consumed routes (${config.consumes.length}):`);
     for (const { method, path } of config.consumes) console.log(`  - ${method} ${path}`);
 
@@ -97,6 +118,8 @@ async function main() {
       const explanation = await explainChanges(actionable);
 
       printReport(classified, explanation, allChanges.length);
+      // Set, not exit: the snapshot below must still be written, or the next run re-reports everything.
+      if (classified.some((c) => c.severity === 'breaking')) process.exitCode = DRIFT_EXIT;
 
       if (!explanation && actionable.length > 0) {
         console.log(

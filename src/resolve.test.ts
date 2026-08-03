@@ -54,6 +54,20 @@ assert.equal(status('customer.phone'), 'absent');
 assert.equal(status('items[].warehouseCode'), 'absent');
 assert.equal(status('total.deeper'), 'absent', 'a scalar has no members');
 
+// The shape real specs actually emit: properties declared, additionalProperties never mentioned.
+// Requiring an explicit `false` here would make verify silent on essentially every generated spec —
+// 0 of 6 Swagger Petstore schemas set it.
+{
+  const open = {
+    type: 'object',
+    properties: { id: { type: 'string' }, tags: { type: 'array', items: { type: 'object', properties: {} } } },
+  };
+  assert.equal(resolveField(open, 'id', spec).status, 'present');
+  assert.equal(resolveField(open, 'gone', spec).status, 'absent', 'silent by default would make verify useless');
+  // An explicit opt-in to extras is still unprovable.
+  assert.equal(resolveField({ ...open, additionalProperties: true }, 'gone', spec).status, 'unprovable');
+}
+
 // Unprovable beats absent everywhere the schema cannot rule the field out. Each of these reported as
 // `absent` would be a fabricated breaking change.
 assert.equal(status('anything', { $ref: '#/components/schemas/Loose' }), 'unprovable', 'free-form object');

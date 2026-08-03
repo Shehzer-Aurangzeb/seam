@@ -8,7 +8,7 @@
     "dev": "tsx src/cli.ts",
     "init": "node --env-file=.env node_modules/tsx/dist/cli.mjs src/cli.ts init",
     "check": "node --env-file=.env node_modules/tsx/dist/cli.mjs src/cli.ts",
-    "test": "node --import tsx src/multiBackend.test.ts && node --import tsx src/consumption.test.ts && node --import tsx src/resolve.test.ts && tsc"
+    "test": "node --import tsx src/multiBackend.test.ts && node --import tsx src/consumption.test.ts && node --import tsx src/resolve.test.ts && node --import tsx src/verify.test.ts && tsc"
   },
   "packageManager": "pnpm@10.13.1",
   "devDependencies": {

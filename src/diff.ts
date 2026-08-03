@@ -18,10 +18,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-type Operation = { path: string; method: string; body: Record<string, unknown> };
+export type Operation = { path: string; method: string; body: Record<string, unknown> };
 
 /** Flattens a spec into `"GET /foo" -> operation object`, ignoring non-method keys. */
-function operations(spec: unknown): Map<string, Operation> {
+export function operations(spec: unknown): Map<string, Operation> {
   const paths = isObject(spec) && isObject(spec.paths) ? spec.paths : {};
   const ops = new Map<string, Operation>();
   for (const [path, pathItem] of Object.entries(paths)) {

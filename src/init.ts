@@ -1,9 +1,9 @@
 import { existsSync, globSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, extname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { BACKENDS_FILE, CONFIG_DIR, ConsumedRouteSchema, DEFAULT_CONFIG, backendKey, readRegistry } from './config.js';
 import { bold, cyan, dim, green } from './color.js';
-import { completeJson } from './llm.js';
+import { BIG_PAYLOAD_MODEL, completeJson } from './llm.js';
 
 // Bytes are the real budget; the file count is just a backstop. It used to be 40 because scoring was
 // a word-count that let noise in — now that only genuine call sites score above zero, 40 was cutting
@@ -83,11 +83,13 @@ RESPONSE FIELDS — "responseFields" (per route) is every path the frontend READ
 - Strip the transport wrapper used to reach the payload: data.user.email -> "user.email", res.data.total -> "total", (await r.json()).id -> "id".
 - Nested objects use dots: "profile.firstName".
 - Arrays use []: data.items.map(i => i.id) -> "items[].id", items[0].sku -> "items[].sku".
-- A whole object read without touching its fields is that object's path: setUser(data.user) -> "user".
+- A whole object read without touching its fields is that object's path: setUser(data.user) -> "user". Use this ONLY when nothing in the files you were given reads a field off it. Before you emit a bare container like "results" or "items", search the other files for what happens to it — a destructure, a .map, a property access, a type it is assigned to — and emit those field paths instead. The container name alone is the answer of last resort; a field path is the whole point.
 - If a Zod schema or type describes the response, every field it declares counts as read.
 - Worked example. Given: const r = await backend.get(\`/orders/\${id}\`); return { who: r.data.customer.email, skus: r.data.lines.map(l => l.sku) };
   emit on GET /orders/{id}: "responseFields": ["customer.email", "lines[].sku"].
 - PARTIAL IS CORRECT, INVENTED IS NOT. You can only see what the code you were given shows, so a short list of genuinely observed reads is the right answer — never withhold it for being incomplete. What is forbidden is naming a field you did not see read. If a route's response is returned or forwarded wholesale and no downstream read is visible anywhere, omit "responseFields" for that route.
+
+Some files are labelled "=== path (imported by a call site) ===". They are included because a file that DOES call the backend imports them — usually a wrapper, a transform, a hook or a type module. Use them to follow a chain: which base URL a wrapper ultimately reads, and what the caller's response data flows into once it leaves the fetch. A field read you find in one of these files counts as read for the route whose response reaches it. Do not treat such a file as evidence of a new operation on its own.
 
 NEVER emit an empty array for any of these three lists. Leave the key out entirely instead. An omitted list means "monitor the whole contract"; an empty one reads as a deliberate "nothing here matters" and would hide real breakage.
 
@@ -96,7 +98,8 @@ For specUrl: return a URL ONLY if an OpenAPI/Swagger spec or API docs URL is pla
 Return JSON ONLY — no markdown fences, no commentary — matching exactly:
 {"specUrl":"...","backends":[{"ref":"...","globalHeaders":["..."],"consumes":[{"method":"...","path":"...","headers":["..."],"responseFields":["..."]}]}]}`;
 
-type SourceFile = { rel: string; text: string };
+/** `context` files were pulled in by an import, not by scoring — the payload labels them so the model knows. */
+type SourceFile = { rel: string; text: string; context: boolean };
 
 type Route = z.infer<typeof ConsumedRouteSchema>;
 type Backend = { ref: string; globalHeaders?: string[]; consumes: Route[] };
@@ -258,6 +261,34 @@ export function signalScore(text: string): number {
 export const isTestFile = (file: string): boolean =>
   /\.(test|spec)\.[jt]sx?$/.test(file) || /(^|\/)(__tests__|__mocks__)\//.test(file);
 
+/** `from '…'` covers import and re-export; the second alternative is a dynamic `import('…')`. */
+const IMPORT_RE = /\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+export const importSpecifiers = (text: string): string[] =>
+  [...text.matchAll(IMPORT_RE)].map((m) => m[1] ?? m[2]);
+
+/**
+ * Relative and `@/` specifiers only, resolved against files we already walked — so a package name,
+ * a CSS import or a path outside the scan can never pull anything in.
+ * ponytail: `@/` is assumed to alias the scan root, which is the Next.js default. tsconfig `paths`
+ * is not read; if a codebase aliases something else, read tsconfig here.
+ */
+export function resolveImport(spec: string, fromFile: string, root: string, known: Set<string>): string | undefined {
+  const base = spec.startsWith('@/')
+    ? join(root, spec.slice(2))
+    : spec.startsWith('.')
+      ? resolve(dirname(fromFile), spec)
+      : undefined;
+  if (!base) return undefined;
+  if (known.has(base)) return base; // written with its extension
+  for (const ext of EXTENSIONS) {
+    if (known.has(base + ext)) return base + ext;
+    const index = join(base, `index${ext}`);
+    if (known.has(index)) return index;
+  }
+  return undefined;
+}
+
 export type ScanCounts = {
   /** Every source file under the root, before any filtering. */
   walked: number;
@@ -265,7 +296,10 @@ export type ScanCounts = {
   oversize: number;
   /** Files showing at least one backend-call signal — the candidates. */
   matched: number;
+  /** Call sites sent. */
   sent: number;
+  /** Files sent only because a call site imports them. */
+  context: number;
   dropped: number;
 };
 
@@ -282,14 +316,43 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
     .filter((c) => c.score > 0)
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
 
+  /**
+   * Depth 1: the files a call site directly imports. They score 0 themselves — a transform or a
+   * fetch wrapper calls nothing, so it never survived scoring — which is why the model kept seeing
+   * the backend call in one file and the field reads in another with no visible link, and answered
+   * with no responseFields at all. Depth 2 was measured and adds bytes for zero extra coverage.
+   */
+  const byPath = new Map(readable.map((c) => [c.file, c]));
+  const known = new Set(byPath.keys());
+  const seeds = new Set(scored.map((c) => c.file));
+  const imported = [
+    ...new Set(
+      scored.flatMap((c) =>
+        importSpecifiers(c.text)
+          .map((spec) => resolveImport(spec, c.file, root, known))
+          .filter((p): p is string => p !== undefined && !seeds.has(p)),
+      ),
+    ),
+  ].sort();
+
   const files: SourceFile[] = [];
   let bytes = 0;
-  for (const candidate of scored) {
+  // Call sites first: imported context only gets the budget they leave behind.
+  const queue = [
+    ...scored.map((c) => ({ ...c, context: false })),
+    ...imported.map((p) => ({ ...byPath.get(p)!, context: true })),
+  ];
+  for (const candidate of queue) {
     if (files.length >= MAX_FILES || bytes + candidate.text.length > MAX_TOTAL_BYTES) continue;
-    files.push({ rel: relative(root, candidate.file) || basename(candidate.file), text: candidate.text });
+    files.push({
+      rel: relative(root, candidate.file) || basename(candidate.file),
+      text: candidate.text,
+      context: candidate.context,
+    });
     bytes += candidate.text.length;
   }
 
+  const sent = files.filter((f) => !f.context).length;
   return {
     files,
     counts: {
@@ -297,8 +360,9 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
       tests: found.length - production.length,
       oversize: production.length - readable.length,
       matched: scored.length,
-      sent: files.length,
-      dropped: scored.length - files.length,
+      sent,
+      context: files.length - sent,
+      dropped: scored.length - sent,
     },
   };
 }
@@ -328,17 +392,25 @@ export async function runInit(target: string | undefined): Promise<void> {
       `${counts.sent} sent to Claude, ${counts.dropped} dropped by cap.`,
   );
   const notes = [
+    counts.context > 0 && `${counts.context} imported file(s) added as context`,
     counts.tests > 0 && `${counts.tests} test file(s) excluded`,
     counts.oversize > 0 && `${counts.oversize} oversize file(s) skipped`,
   ].filter(Boolean);
   if (notes.length > 0) console.log(dim(`(${notes.join(', ')})`));
 
   // Only source files the caller pointed us at — never .env, never anything outside the path.
-  const payload = files.map((f) => `=== ${f.rel} ===\n${f.text}`).join('\n\n');
+  const payload = files
+    .map((f) => `=== ${f.rel}${f.context ? ' (imported by a call site)' : ''} ===\n${f.text}`)
+    .join('\n\n');
 
   let text: string;
   try {
-    text = await completeJson({ system: SYSTEM_PROMPT, user: payload, maxTokens: MAX_TOKENS });
+    text = await completeJson({
+      system: SYSTEM_PROMPT,
+      user: payload,
+      maxTokens: MAX_TOKENS,
+      model: BIG_PAYLOAD_MODEL,
+    });
   } catch (err) {
     throw new Error(`Claude request failed, nothing written: ${err instanceof Error ? err.message : err}`);
   }

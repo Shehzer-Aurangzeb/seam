@@ -4,7 +4,16 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { backendKey, loadConfig, resolveConfigPath } from './config.js';
-import { clusterBackends, isTestFile, isValidRef, normalizeRef, signalScore, slug } from './init.js';
+import {
+  clusterBackends,
+  importSpecifiers,
+  isTestFile,
+  isValidRef,
+  normalizeRef,
+  resolveImport,
+  signalScore,
+  slug,
+} from './init.js';
 import { snapshotPath } from './snapshot.js';
 
 // isTestFile: tests and mocks out, production in
@@ -186,6 +195,42 @@ assert.equal(backendKey('other.json'), 'other');
   } finally {
     process.chdir(cwd);
   }
+}
+
+// ---------- import following: the depth-1 context that carries responseFields ----------
+
+assert.deepEqual(
+  importSpecifiers(
+    [
+      "import { getSession } from '@/lib/session';",
+      "import type { User } from './types';",
+      "export { x } from '../shared';",
+      "const mod = await import('@/lib/lazy');",
+      "import 'server-only';",
+    ].join('\n'),
+  ),
+  ['@/lib/session', './types', '../shared', '@/lib/lazy'],
+  "static, re-export and dynamic imports are followed; a bare side-effect import is not a 'from'",
+);
+
+{
+  const root = '/app/src';
+  const known = new Set([
+    '/app/src/lib/session.ts',
+    '/app/src/lib/api/index.ts',
+    '/app/src/components/Card.tsx',
+  ]);
+  const from = '/app/src/lib/platform.ts';
+  const r = (spec: string) => resolveImport(spec, from, root, known);
+
+  assert.equal(r('@/lib/session'), '/app/src/lib/session.ts', '@/ aliases the scan root');
+  assert.equal(r('./session'), '/app/src/lib/session.ts', 'relative, extension inferred');
+  assert.equal(r('@/lib/api'), '/app/src/lib/api/index.ts', 'a directory resolves to its index');
+  assert.equal(r('../components/Card.tsx'), '/app/src/components/Card.tsx', 'explicit extension');
+  assert.equal(r('next/navigation'), undefined, 'a package is never pulled in');
+  assert.equal(r('@/lib/nope'), undefined, 'an unwalked file is never pulled in');
+  assert.equal(r('@/styles.css'), undefined, 'a non-source import never resolves — the scan only walked source');
+  assert.equal(r('../../../etc/passwd'), undefined, 'nothing outside the scanned set, ever');
 }
 
 console.log('ok');

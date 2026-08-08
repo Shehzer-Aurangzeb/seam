@@ -1,4 +1,5 @@
 import diff, { type Difference } from 'microdiff';
+import { inlineRefs } from './resolve.js';
 
 // ponytail: the five methods driftcheck's config can name. Add head/options/trace here
 // and to the config enum together if a spec ever needs them.
@@ -34,9 +35,20 @@ export function operations(spec: unknown): Map<string, Operation> {
   return ops;
 }
 
+/**
+ * Operations with their `$ref`s expanded. Diffing raw bodies compares pointers, not shapes, so a
+ * response schema that lives in `components` was never examined at all. Kept out of `operations`
+ * itself: `verify` resolves field paths lazily and would only pay for the expansion.
+ */
+function inlinedOperations(spec: unknown): Map<string, Operation> {
+  const ops = operations(spec);
+  for (const op of ops.values()) op.body = inlineRefs(op.body, spec) as Record<string, unknown>;
+  return ops;
+}
+
 export function diffSpecs(oldSpec: unknown, newSpec: unknown): OperationChange[] {
-  const before = operations(oldSpec);
-  const after = operations(newSpec);
+  const before = inlinedOperations(oldSpec);
+  const after = inlinedOperations(newSpec);
   const changes: OperationChange[] = [];
 
   for (const [key, { path, method, body }] of after) {

@@ -292,4 +292,70 @@ assert.equal(
   expect(classifyAll(diffSpecs(oldSpec, newSpec), config, oldSpec, newSpec)[0], 'breaking', 'basePath route matched');
 }
 
+// ---------- $ref: the whole reason check was blind to component schemas ----------
+// Every fixture in this suite spells its response schema out inline, so a `$ref` — which is what
+// real generated specs emit — was never exercised, and diffSpecs reported 0 changes on a retyped
+// or deleted field. These build the same operations through components.schemas instead.
+{
+  /** GET /orders whose 200 body is `$ref: '#/components/schemas/Order'`. */
+  const refSpec = (order: unknown) => ({
+    paths: {
+      '/orders': {
+        get: { responses: { '200': { content: { 'application/json': { schema: { $ref: '#/components/schemas/Order' } } } } } },
+      },
+    },
+    components: { securitySchemes: SCHEMES, schemas: { Order: order } },
+  });
+  const order = (properties: Record<string, unknown>) => ({ type: 'object', properties });
+  const refConfig = (responseFields?: string[]): Config => ({
+    specUrl: 'https://example.com/openapi.json',
+    consumes: [{ method: 'GET', path: '/orders', ...(responseFields ? { responseFields } : {}) }],
+  });
+  const refCheck = (before: unknown, after: unknown, config: Config) => {
+    const [oldSpec, newSpec] = [refSpec(before), refSpec(after)];
+    const [result] = classifyAll(diffSpecs(oldSpec, newSpec), config, oldSpec, newSpec);
+    return result;
+  };
+
+  assert.equal(
+    diffSpecs(refSpec(order({ name: { type: 'string' } })), refSpec(order({ name: { type: 'integer' } }))).length,
+    1,
+    'a retype behind a $ref is a change — this reported 0 before refs were inlined',
+  );
+
+  expect(
+    refCheck(order({ name: { type: 'string' } }), order({ name: { type: 'integer' } }), refConfig(['name'])),
+    'breaking',
+    'consumed field retyped inside components.schemas',
+  );
+  expect(
+    refCheck(order({ name: { type: 'string' }, status: { type: 'string' } }), order({ name: { type: 'string' } }), refConfig(['name'])),
+    'ignore',
+    'an unread field removed behind a $ref is still filtered by consumption',
+  );
+  expect(
+    refCheck(order({ name: { type: 'string' }, status: { type: 'string' } }), order({ name: { type: 'string' } }), refConfig(['status'])),
+    'breaking',
+    'the read one is not',
+  );
+  assert.equal(
+    diffSpecs(refSpec(order({ name: { type: 'string' } })), refSpec(order({ name: { type: 'string' } }))).length,
+    0,
+    'an unchanged $ref stays quiet — inlining must not invent changes',
+  );
+
+  // A self-referential schema must terminate and still compare equal to itself.
+  const recursive = order({ name: { type: 'string' }, parent: { $ref: '#/components/schemas/Order' } });
+  assert.equal(diffSpecs(refSpec(recursive), refSpec(recursive)).length, 0, 'a cyclic schema terminates and matches');
+  assert.equal(
+    diffSpecs(refSpec(recursive), refSpec(order({ name: { type: 'integer' }, parent: { $ref: '#/components/schemas/Order' } }))).length,
+    1,
+    'and a change inside the cycle is still seen',
+  );
+
+  // A ref that cannot be followed is not evidence of anything — it must not diff as a removal.
+  const dangling = { paths: { '/orders': { get: { responses: { '200': { content: { 'application/json': { schema: { $ref: '#/components/schemas/Gone' } } } } } } } } };
+  assert.equal(diffSpecs(dangling, dangling).length, 0, 'an unresolvable $ref is left alone, not dropped');
+}
+
 console.log('ok');

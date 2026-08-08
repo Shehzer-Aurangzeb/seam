@@ -46,6 +46,36 @@ function deref(node: unknown, spec: unknown): unknown {
   return current;
 }
 
+/**
+ * Expands every local `$ref` in a subtree into what it points at, so two specs can be compared on
+ * the shapes they describe rather than on the pointers they use. `check` diffs operation bodies with
+ * microdiff, and a `$ref` node is byte-identical on both sides — which made every change inside
+ * `components.schemas` invisible, including a retyped or deleted response field.
+ *
+ * `active` is the chain currently being expanded, so a self-referential schema stops at the point of
+ * re-entry and stays a `$ref` node. That marker is what makes it safe: both sides emit the same one,
+ * so an unchanged cycle still compares equal. Unresolvable and remote refs are left alone for the
+ * same reason — silent, not wrong.
+ *
+ * ponytail: expands per branch, so a schema referenced from ten places is materialised ten times.
+ * That is what makes the diff paths honest. Real specs are small (39 schemas / 51 refs on the
+ * biggest one here); memoize by ref if a spec ever gets big enough to notice.
+ */
+export function inlineRefs(node: unknown, spec: unknown, active: readonly string[] = []): unknown {
+  if (Array.isArray(node)) return node.map((item) => inlineRefs(item, spec, active));
+  if (!isObject(node)) return node;
+
+  const ref = node.$ref;
+  if (typeof ref === 'string') {
+    if (!ref.startsWith('#/') || active.includes(ref) || active.length >= MAX_HOPS) return node;
+    const target = readPath(spec, ref.slice(2).split('/').map(unescapePointer));
+    // A sibling key beside `$ref` is ignored by OpenAPI 3.0, so replacing the whole node is correct.
+    return target === undefined ? node : inlineRefs(target, spec, [...active, ref]);
+  }
+
+  return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, inlineRefs(value, spec, active)]));
+}
+
 /** Types that cannot hold members, so a field path descending into one is demonstrably gone. */
 const SCALARS = new Set(['string', 'number', 'integer', 'boolean', 'null']);
 

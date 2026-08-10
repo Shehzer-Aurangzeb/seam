@@ -14,6 +14,7 @@ import {
   signalScore,
   slug,
 } from './init.js';
+import { parseRepo } from './github.js';
 import { snapshotPath } from './snapshot.js';
 
 // isTestFile: tests and mocks out, production in
@@ -232,5 +233,24 @@ assert.deepEqual(
   assert.equal(r('@/styles.css'), undefined, 'a non-source import never resolves — the scan only walked source');
   assert.equal(r('../../../etc/passwd'), undefined, 'nothing outside the scanned set, ever');
 }
+
+// ---------- parseRepo: a wrong ref silently scans the wrong code, so this must not guess ----------
+
+assert.deepEqual(parseRepo('Dedicate-com/platform-web'), { owner: 'Dedicate-com', name: 'platform-web' });
+assert.deepEqual(parseRepo('  owner/name  '), { owner: 'owner', name: 'name' }, 'surrounding space is trimmed');
+assert.deepEqual(parseRepo('owner/name@dev'), { owner: 'owner', name: 'name', ref: 'dev' });
+assert.deepEqual(
+  parseRepo('owner/name@feature/add-thing'),
+  { owner: 'owner', name: 'name', ref: 'feature/add-thing' },
+  'a slash in the branch belongs to the ref, not the repo',
+);
+assert.deepEqual(
+  parseRepo('owner/name@8133389'),
+  { owner: 'owner', name: 'name', ref: '8133389' },
+  'a sha is just a ref',
+);
+assert.deepEqual(parseRepo('a/b.js'), { owner: 'a', name: 'b.js' }, 'a dot is legal in a repo name');
+for (const bad of ['', 'name', 'owner/', '/name', 'https://github.com/owner/name', 'owner/name/extra'])
+  assert.throws(() => parseRepo(bad), /Not a repo/, bad);
 
 console.log('ok');

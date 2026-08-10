@@ -65,8 +65,13 @@ function printConfigHeader(configPath: string, config: Config): void {
 async function main() {
   try {
     const [subcommand, ...rest] = process.argv.slice(2);
+    // `init <path>` scans a local directory; `init [path] --repo owner/name[@ref]` scans a repo seam
+    // does not have on disk, where the path narrows to a subdirectory of it.
     if (subcommand === 'init') {
-      await runInit(rest[0]);
+      const at = rest.indexOf('--repo');
+      const repo = at === -1 ? undefined : rest[at + 1];
+      if (at !== -1 && !repo) throw new Error('--repo needs a value: --repo owner/name[@branch]');
+      await runInit(rest.filter((arg, i) => i !== at && i !== at + 1)[0], repo);
       return;
     }
 

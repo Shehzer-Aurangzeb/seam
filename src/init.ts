@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { BACKENDS_FILE, CONFIG_DIR, ConsumedRouteSchema, DEFAULT_CONFIG, backendKey, readRegistry } from './config.js';
 import { bold, cyan, dim, green } from './color.js';
 import { BIG_PAYLOAD_MODEL, completeJson } from './llm.js';
+import { downloadRepo, githubToken, parseRepo } from './github.js';
 
 // Bytes are the real budget; the file count is just a backstop. It used to be 40 because scoring was
 // a word-count that let noise in — now that only genuine call sites score above zero, 40 was cutting
@@ -367,8 +368,8 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
   };
 }
 
-export async function runInit(target: string | undefined): Promise<void> {
-  if (!target) {
+export async function runInit(target: string | undefined, repoSpec?: string): Promise<void> {
+  if (!target && !repoSpec) {
     throw new Error(
       'init needs a path: driftcheck init <dir-or-glob> — point it at the code that calls your backend (e.g. src/app/api). There is no default.',
     );
@@ -377,7 +378,20 @@ export async function runInit(target: string | undefined): Promise<void> {
     throw new Error('init needs ANTHROPIC_API_KEY set — it reads your codebase with Claude to draft the config.');
   }
 
-  const root = resolve(process.cwd(), target);
+  // A connected repo is scanned exactly like a local checkout: download, then point the same scan at
+  // it. `target` narrows to a subdirectory (`src`), which is what keeps a monorepo's other apps out.
+  const repo = repoSpec ? parseRepo(repoSpec) : undefined;
+  const downloaded = repo ? await downloadRepo(repo, githubToken()) : undefined;
+  if (repo) console.log(`Downloaded ${cyan(`${repo.owner}/${repo.name}${repo.ref ? `@${repo.ref}` : ''}`)}.`);
+
+  try {
+    await draftConfigs(downloaded ? resolve(downloaded.dir, target ?? '.') : resolve(process.cwd(), target!));
+  } finally {
+    downloaded?.dispose();
+  }
+}
+
+async function draftConfigs(root: string): Promise<void> {
   const { files, counts } = gather(root);
   if (counts.walked === 0) throw new Error(`No .ts/.tsx/.js/.jsx files found under ${root}.`);
   if (counts.matched === 0) {

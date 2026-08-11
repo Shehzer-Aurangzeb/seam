@@ -5,6 +5,7 @@ import { BACKENDS_FILE, CONFIG_DIR, ConsumedRouteSchema, DEFAULT_CONFIG, backend
 import { bold, cyan, dim, green } from './color.js';
 import { BIG_PAYLOAD_MODEL, completeJson } from './llm.js';
 import { downloadRepo, githubToken, parseRepo } from './github.js';
+import { operationKey } from './scope.js';
 
 // Bytes are the real budget; the file count is just a backstop. It used to be 40 because scoring was
 // a word-count that let noise in — now that only genuine call sites score above zero, 40 was cutting
@@ -126,7 +127,14 @@ const CLIENT_REF = /^[a-z_$][A-Za-z0-9_$]*(Client|Api|API|Service)$/;
 /** A ref names a base URL or it names nothing. Prose, URLs and function names are all rejected here. */
 export const isValidRef = (ref: string): boolean => ENV_REF.test(ref) || CLIENT_REF.test(ref);
 
-const routeKey = (r: Route) => `${r.method} ${r.path}`;
+/**
+ * The same identity `check` and `verify` use, so a param NAME never splits one operation into two
+ * config entries. Two call sites spell the same route `/users/{id}` and `/users/{sub}`, and chunking
+ * makes that routine — different chunks see different call sites. Two entries is not just noise: the
+ * response fields observed at each sighting land on a different entry, so each one monitors less than
+ * what was actually seen. First spelling wins; nothing downstream compares paths literally.
+ */
+const routeKey = (r: Route) => operationKey(r.method, r.path);
 
 /**
  * An empty list is dropped, never written. Absent means "not observed, so monitor everything";

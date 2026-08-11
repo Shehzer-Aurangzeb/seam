@@ -71,6 +71,18 @@ for (const bad of [
   assert.equal(groups[1].consumes.length, 1, 'smaller valid group untouched');
 }
 
+// clusterBackends: a path-param NAME must not split one operation across two entries, or the fields
+// each call site showed us end up on different entries and both monitor less than what was seen.
+{
+  const { groups } = clusterBackends([
+    { ref: 'API_URL', consumes: [{ method: 'GET', path: '/users/{id}', responseFields: ['email'] }] },
+    { ref: 'API_URL', consumes: [{ method: 'GET', path: '/users/{sub}', responseFields: ['name'] }] },
+  ]);
+  assert.equal(groups[0].consumes.length, 1, 'one operation, one entry');
+  assert.equal(groups[0].consumes[0].path, '/users/{id}', 'the first spelling seen is kept');
+  assert.deepEqual(groups[0].consumes[0].responseFields, ['email', 'name'], 'both sightings union');
+}
+
 // clusterBackends: no valid ref at all -> ONE unnamed group with every route, never a prose file
 {
   const { groups, folded } = clusterBackends([

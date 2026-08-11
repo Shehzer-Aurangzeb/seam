@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { backendKey, loadConfig, resolveConfigPath } from './config.js';
 import {
+  chunkFiles,
   clusterBackends,
   importSpecifiers,
   isTestFile,
@@ -235,13 +236,62 @@ assert.deepEqual(
   assert.equal(r('../../../etc/passwd'), undefined, 'nothing outside the scanned set, ever');
 }
 
-// parseInitArgs: a dropped path is indistinguishable from the user never passing one.
+// parseInitArgs: dropping the path leaves init looking like the user forgot one.
 assert.deepEqual(parseInitArgs(['src']), { path: 'src' });
 assert.deepEqual(parseInitArgs([]), { path: undefined });
 assert.deepEqual(parseInitArgs(['src', '--repo', 'o/n@dev']), { path: 'src', repo: 'o/n@dev' });
 assert.deepEqual(parseInitArgs(['--repo', 'o/n', 'src']), { path: 'src', repo: 'o/n' });
 assert.deepEqual(parseInitArgs(['--repo', 'o/n']), { path: undefined, repo: 'o/n' }, 'a repo with no path scans its root');
 assert.throws(() => parseInitArgs(['src', '--repo']), /--repo needs a value/);
+
+// ---------- chunkFiles: a call site must never be split from the files it imports ----------
+{
+  const KB = 'x'.repeat(1000);
+  const f = (file: string, context = false) => ({ file, text: KB, context });
+  const selected = [
+    f('/s/a.ts'),
+    f('/s/b.ts'),
+    f('/s/shared.ts', true), // imported by BOTH call sites
+    f('/s/onlyA.ts', true),
+  ];
+  const importsOf = new Map([
+    ['/s/a.ts', ['/s/shared.ts', '/s/onlyA.ts']],
+    ['/s/b.ts', ['/s/shared.ts']],
+  ]);
+  const filesIn = (chunk: { file: string }[]) => chunk.map((c) => c.file).sort();
+
+  // Everything fits: one call, exactly as before chunking existed.
+  {
+    const chunks = chunkFiles(selected, importsOf, 10_000);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0].length, 4);
+  }
+
+  // Budget forces a split. Each call site keeps its own imports — a seed separated from the file its
+  // response data flows into is the exact state that returned zero responseFields.
+  {
+    const chunks = chunkFiles(selected, importsOf, 2_500);
+    assert.equal(chunks.length, 2);
+    assert.deepEqual(filesIn(chunks[0]), ['/s/a.ts', '/s/onlyA.ts', '/s/shared.ts']);
+    assert.deepEqual(filesIn(chunks[1]), ['/s/b.ts', '/s/shared.ts'], 'shared context is re-sent, not dropped');
+    for (const chunk of chunks) {
+      assert.ok(chunk.some((c) => !c.context), 'a chunk with no call site is tokens spent on nothing');
+    }
+  }
+
+  // A unit larger than the budget still travels whole: splitting it is the bug, not the fix.
+  {
+    const chunks = chunkFiles(selected, importsOf, 500);
+    assert.equal(chunks.length, 2);
+    assert.deepEqual(filesIn(chunks[0]), ['/s/a.ts', '/s/onlyA.ts', '/s/shared.ts']);
+  }
+
+  // A context file whose importer was cut by the cap must still be sent, not silently dropped.
+  {
+    const chunks = chunkFiles([...selected, f('/s/orphan.ts', true)], importsOf, 10_000);
+    assert.ok(chunks.flat().some((c) => c.file === '/s/orphan.ts'), 'an unattributed context file still goes out');
+  }
+}
 
 // ---------- parseRepo: a wrong ref silently scans the wrong code, so this must not guess ----------
 

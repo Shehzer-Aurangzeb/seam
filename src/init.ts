@@ -15,22 +15,30 @@ const MAX_TOTAL_BYTES = 200_000;
 const MAX_FILE_BYTES = 60_000;
 // Headers and response fields make the answer several times longer than v1's route list.
 const MAX_TOKENS = 8192;
+/**
+ * How much source goes into ONE call. The variance this bounds is a payload-scale effect, not a
+ * prompt one: on a 47k-token payload the model returned 8 of 45 routes with responseFields on one
+ * run and 16 on another, while a 4k-token probe of the same prompt extracted them reliably. 40KB is
+ * roughly 10k tokens — inside the reliable band, and wide enough that a call site plus everything it
+ * imports normally lands in a single chunk.
+ */
+const PER_CHUNK_BYTES = 40_000;
 
 const EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', '.next', '.turbo']);
 
 // specUrl is best-effort at init time, so an empty string is valid here even though a run requires a URL.
+// Neither list is `.nonempty()`: one chunk of files can legitimately contain no backend call at all,
+// and a backend with no routes is dropped by the caller. Only EVERY chunk coming back empty is an error.
 const DraftConfigSchema = z.object({
   specUrl: z.union([z.url(), z.literal('')]),
-  backends: z
-    .array(
-      z.object({
-        ref: z.string().min(1),
-        globalHeaders: z.array(z.string()).optional(),
-        consumes: z.array(ConsumedRouteSchema).nonempty(),
-      }),
-    )
-    .nonempty(),
+  backends: z.array(
+    z.object({
+      ref: z.string().min(1),
+      globalHeaders: z.array(z.string()).optional(),
+      consumes: z.array(ConsumedRouteSchema),
+    }),
+  ),
 });
 
 const SYSTEM_PROMPT = `You are reading a frontend codebase to work out which backend HTTP operations it consumes.
@@ -302,9 +310,72 @@ export type ScanCounts = {
   /** Files sent only because a call site imports them. */
   context: number;
   dropped: number;
+  /** How many calls the payload was split across. */
+  chunks: number;
 };
 
-function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
+/** A selected file, still carrying its absolute path so imports can be matched to it. */
+type Candidate = { file: string; text: string; context: boolean };
+
+/**
+ * Splits the selected files into per-call-site chunks, each carrying the files it imports.
+ *
+ * A flat byte split would undo the import-following fix: the call site lands in one chunk and the
+ * transform or type module it imports in another, which is exactly the state that made the model
+ * return no responseFields at all. So a chunk grows one call site at a time, each pulling its own
+ * imports in with it, and closes when the next one would not fit.
+ *
+ * ponytail: a file imported from call sites in different chunks is sent once per chunk. That
+ * duplication is what keeps every call site beside its context — it costs input tokens, not
+ * correctness. Group seeds by shared imports first if the bill ever matters.
+ */
+export function chunkFiles(
+  selected: Candidate[],
+  importsOf: Map<string, string[]>,
+  budget = PER_CHUNK_BYTES,
+): Candidate[][] {
+  const available = new Map(selected.map((c) => [c.file, c]));
+  const chunks: Candidate[][] = [];
+  let current = new Map<string, Candidate>();
+  let bytes = 0;
+
+  const flush = () => {
+    if (current.size > 0) chunks.push([...current.values()]);
+    current = new Map();
+    bytes = 0;
+  };
+
+  for (const seed of selected.filter((c) => !c.context)) {
+    const unit = [
+      seed,
+      ...(importsOf.get(seed.file) ?? [])
+        .map((path) => available.get(path))
+        .filter((c): c is Candidate => c !== undefined),
+    ];
+    // Only what this chunk does not already hold counts against the budget.
+    const incoming = unit.filter((c) => !current.has(c.file)).reduce((n, c) => n + c.text.length, 0);
+    // A unit bigger than the budget on its own still goes out whole — splitting it is the bug.
+    if (bytes + incoming > budget) flush();
+    for (const candidate of unit) {
+      if (current.has(candidate.file)) continue;
+      current.set(candidate.file, candidate);
+      bytes += candidate.text.length;
+    }
+  }
+  flush();
+
+  // A context file whose importing call site was cut by the cap belongs to no chunk. Send it with the
+  // last one rather than dropping it silently — the counts already told the user it was sent.
+  const assigned = new Set(chunks.flat().map((c) => c.file));
+  const orphans = selected.filter((c) => !assigned.has(c.file));
+  if (orphans.length > 0) {
+    if (chunks.length === 0) chunks.push(orphans);
+    else chunks[chunks.length - 1].push(...orphans);
+  }
+  return chunks;
+}
+
+function gather(root: string): { chunks: SourceFile[][]; counts: ScanCounts } {
   const found = candidates(root);
   // Tests are dropped BEFORE scoring: they hardcode mock base URLs that score as real call sites.
   const production = found.filter((f) => !isTestFile(f));
@@ -326,44 +397,57 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
   const byPath = new Map(readable.map((c) => [c.file, c]));
   const known = new Set(byPath.keys());
   const seeds = new Set(scored.map((c) => c.file));
-  const imported = [
-    ...new Set(
-      scored.flatMap((c) =>
-        importSpecifiers(c.text)
-          .map((spec) => resolveImport(spec, c.file, root, known))
-          .filter((p): p is string => p !== undefined && !seeds.has(p)),
-      ),
-    ),
-  ].sort();
+  // Every call site's own imports, INCLUDING ones that are call sites themselves: chunking is what
+  // makes that distinction matter, because a transform that happens to score above zero still has to
+  // travel with the caller whose response data flows into it.
+  const importsOf = new Map(
+    scored.map((c) => [
+      c.file,
+      [
+        ...new Set(
+          importSpecifiers(c.text)
+            .map((spec) => resolveImport(spec, c.file, root, known))
+            .filter((p): p is string => p !== undefined && p !== c.file),
+        ),
+      ],
+    ]),
+  );
+  // Selection is unchanged: only non-seed imports are pulled in as extra files, so which files get
+  // sent does not depend on how they are later chunked.
+  const imported = [...new Set([...importsOf.values()].flat().filter((p) => !seeds.has(p)))].sort();
 
-  const files: SourceFile[] = [];
+  const selected: Candidate[] = [];
   let bytes = 0;
   // Call sites first: imported context only gets the budget they leave behind.
-  const queue = [
-    ...scored.map((c) => ({ ...c, context: false })),
-    ...imported.map((p) => ({ ...byPath.get(p)!, context: true })),
+  const queue: Candidate[] = [
+    ...scored.map((c) => ({ file: c.file, text: c.text, context: false })),
+    ...imported.map((p) => ({ file: p, text: byPath.get(p)!.text, context: true })),
   ];
   for (const candidate of queue) {
-    if (files.length >= MAX_FILES || bytes + candidate.text.length > MAX_TOTAL_BYTES) continue;
-    files.push({
-      rel: relative(root, candidate.file) || basename(candidate.file),
-      text: candidate.text,
-      context: candidate.context,
-    });
+    if (selected.length >= MAX_FILES || bytes + candidate.text.length > MAX_TOTAL_BYTES) continue;
+    selected.push(candidate);
     bytes += candidate.text.length;
   }
 
-  const sent = files.filter((f) => !f.context).length;
+  const sent = selected.filter((c) => !c.context).length;
+  const chunks = chunkFiles(selected, importsOf);
   return {
-    files,
+    chunks: chunks.map((chunk) =>
+      chunk.map((c) => ({
+        rel: relative(root, c.file) || basename(c.file),
+        text: c.text,
+        context: c.context,
+      })),
+    ),
     counts: {
       walked: found.length,
       tests: found.length - production.length,
       oversize: production.length - readable.length,
       matched: scored.length,
       sent,
-      context: files.length - sent,
+      context: selected.length - sent,
       dropped: scored.length - sent,
+      chunks: chunks.length,
     },
   };
 }
@@ -371,8 +455,8 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
 /**
  * `init <path>` / `init [path] --repo owner/name[@ref]`, split into the two things runInit needs.
  * Lives here rather than in cli.ts so it can be tested without importing a module that runs `main()`:
- * with no `--repo`, `indexOf` returned -1 and the flag-stripping filter dropped argument 0 — the path
- * itself — so a plain `init src` failed as if the user had never passed one.
+ * the flag-stripping arithmetic silently ate the path when `--repo` was absent, and a dropped path is
+ * indistinguishable from the user forgetting one.
  */
 export function parseInitArgs(rest: string[]): { path?: string; repo?: string } {
   const at = rest.indexOf('--repo');
@@ -405,31 +489,18 @@ export async function runInit(target: string | undefined, repoSpec?: string): Pr
   }
 }
 
-async function draftConfigs(root: string): Promise<void> {
-  const { files, counts } = gather(root);
-  if (counts.walked === 0) throw new Error(`No .ts/.tsx/.js/.jsx files found under ${root}.`);
-  if (counts.matched === 0) {
-    throw new Error(
-      `No backend calls found under ${root} — point init at the dir that contains your API calls. ` +
-        `(walked ${counts.walked} source file(s); none showed a fetch, an API client call, or a base-URL env reference.)`,
-    );
-  }
-
-  console.log(
-    `Walked ${counts.walked} source file(s) under ${root} — ${counts.matched} with a backend-call signal, ` +
-      `${counts.sent} sent to Claude, ${counts.dropped} dropped by cap.`,
-  );
-  const notes = [
-    counts.context > 0 && `${counts.context} imported file(s) added as context`,
-    counts.tests > 0 && `${counts.tests} test file(s) excluded`,
-    counts.oversize > 0 && `${counts.oversize} oversize file(s) skipped`,
-  ].filter(Boolean);
-  if (notes.length > 0) console.log(dim(`(${notes.join(', ')})`));
-
+/**
+ * One chunk, one call. A chunk that finds nothing is normal — it means those files call no backend.
+ * A chunk that FAILS kills the whole run: a config assembled from the chunks that happened to
+ * succeed would silently monitor less than the user thinks, which is the failure this change exists
+ * to remove. The SDK already retries transient errors before this throws.
+ */
+async function draftChunk(files: SourceFile[], index: number, total: number): Promise<z.infer<typeof DraftConfigSchema>> {
   // Only source files the caller pointed us at — never .env, never anything outside the path.
   const payload = files
     .map((f) => `=== ${f.rel}${f.context ? ' (imported by a call site)' : ''} ===\n${f.text}`)
     .join('\n\n');
+  const where = total > 1 ? ` (chunk ${index + 1}/${total})` : '';
 
   let text: string;
   try {
@@ -440,17 +511,44 @@ async function draftConfigs(root: string): Promise<void> {
       model: BIG_PAYLOAD_MODEL,
     });
   } catch (err) {
-    throw new Error(`Claude request failed, nothing written: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`Claude request failed${where}, nothing written: ${err instanceof Error ? err.message : err}`);
   }
 
-  let draft: z.infer<typeof DraftConfigSchema>;
   try {
-    draft = DraftConfigSchema.parse(JSON.parse(text));
+    return DraftConfigSchema.parse(JSON.parse(text));
   } catch {
-    throw new Error('Claude did not return a valid driftcheck config — nothing written. Re-run to try again.');
+    throw new Error(`Claude did not return a valid driftcheck config${where} — nothing written. Re-run to try again.`);
+  }
+}
+
+async function draftConfigs(root: string): Promise<void> {
+  const { chunks, counts } = gather(root);
+  if (counts.walked === 0) throw new Error(`No .ts/.tsx/.js/.jsx files found under ${root}.`);
+  if (counts.matched === 0) {
+    throw new Error(
+      `No backend calls found under ${root} — point init at the dir that contains your API calls. ` +
+        `(walked ${counts.walked} source file(s); none showed a fetch, an API client call, or a base-URL env reference.)`,
+    );
   }
 
-  const returned = draft.backends.filter((b) => b.consumes.length > 0);
+  console.log(
+    `Walked ${counts.walked} source file(s) under ${root} — ${counts.matched} with a backend-call signal, ` +
+      `${counts.sent} sent to Claude in ${counts.chunks} call(s), ${counts.dropped} dropped by cap.`,
+  );
+  const notes = [
+    counts.context > 0 && `${counts.context} imported file(s) added as context`,
+    counts.tests > 0 && `${counts.tests} test file(s) excluded`,
+    counts.oversize > 0 && `${counts.oversize} oversize file(s) skipped`,
+  ].filter(Boolean);
+  if (notes.length > 0) console.log(dim(`(${notes.join(', ')})`));
+
+  const drafts = await Promise.all(chunks.map((files, i) => draftChunk(files, i, chunks.length)));
+
+  // Each chunk saw different files, so each returns its own partial view. The union is the answer:
+  // clusterBackends merges groups by ref, and `absorb` unions the headers and response fields that
+  // each sighting of a route observed — the same merge that already handled one call site seen twice.
+  const returned = drafts.flatMap((d) => d.backends).filter((b) => b.consumes.length > 0);
+  const specUrl = drafts.map((d) => d.specUrl).find(Boolean) ?? '';
   if (returned.length === 0) {
     throw new Error(
       `No backend operations found in the scanned files — nothing written. Point init at the directory where API calls live.`,
@@ -509,7 +607,7 @@ async function draftConfigs(root: string): Promise<void> {
       ...headerField(only),
       consumes: only.consumes,
     });
-    const added = registerBackends([{ key: 'default', specUrl: draft.specUrl }]);
+    const added = registerBackends([{ key: 'default', specUrl }]);
 
     console.log(`\nFound ${only.consumes.length} operation(s):`);
     for (const route of only.consumes) console.log(`  - ${route.method} ${route.path}${describeRoute(route)}`);
@@ -517,8 +615,8 @@ async function draftConfigs(root: string): Promise<void> {
     console.log(`\n${green('Wrote')} ${bold(`${CONFIG_DIR}/${file}`)}.`);
     if (added.length === 0) {
       console.log(dim(`Reused the existing 'default' entry in ${CONFIG_DIR}/${BACKENDS_FILE} — specUrl unchanged.`));
-    } else if (draft.specUrl) {
-      console.log(`specUrl: ${cyan(draft.specUrl)} ${dim(`(recorded in ${CONFIG_DIR}/${BACKENDS_FILE})`)}`);
+    } else if (specUrl) {
+      console.log(`specUrl: ${cyan(specUrl)} ${dim(`(recorded in ${CONFIG_DIR}/${BACKENDS_FILE})`)}`);
     } else {
       console.log(
         `Fill in specUrl under 'default' in ${bold(`${CONFIG_DIR}/${BACKENDS_FILE}`)} before running — ` +

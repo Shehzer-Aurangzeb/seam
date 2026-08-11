@@ -142,6 +142,64 @@ const reasons = (r: { reasons: string[] }) => r.reasons.join(' | ');
 const expect = (r: { severity: Severity; reasons: string[] }, severity: Severity, note: string) =>
   assert.equal(r.severity, severity, `${note} — got ${r.severity}: ${reasons(r)}`);
 
+// One schema under several media types is ONE contract change. The spec repeats it, microdiff repeats
+// it, and before the dedupe every reason and every raw line came out twice.
+{
+  const bothTypes = (properties: Record<string, unknown>) => ({
+    responses: {
+      '200': {
+        content: {
+          'application/json': { schema: { type: 'object', properties } },
+          'application/xml': { schema: { type: 'object', properties } },
+        },
+      },
+    },
+  });
+
+  const result = check(
+    bothTypes({ total: { type: 'number' }, note: { type: 'string' } }),
+    bothTypes({ total: { type: 'string' }, note: { type: 'string' } }),
+    configOf({ responseFields: ['total'] }),
+  );
+  expect(result, 'breaking', 'a retyped consumed field still breaks');
+  assert.equal(result.reasons.length, 1, `one edit, one reason — got: ${result.reasons.join(' | ')}`);
+  assert.equal(result.rawChanges.length, 1, 'and one raw line under it');
+
+  // Two real edits stay two, so the dedupe cannot swallow a distinct change.
+  const two = check(
+    bothTypes({ total: { type: 'number' }, note: { type: 'string' } }),
+    bothTypes({ total: { type: 'string' }, note: { type: 'integer' } }),
+    configOf({ responseFields: ['total', 'note'] }),
+  );
+  assert.equal(two.reasons.length, 2, `two edits, two reasons — got: ${two.reasons.join(' | ')}`);
+
+  // json and xml describing genuinely different shapes are genuinely different changes.
+  const divergent = check(
+    {
+      responses: {
+        '200': {
+          content: {
+            'application/json': { schema: { type: 'object', properties: { total: { type: 'number' } } } },
+            'application/xml': { schema: { type: 'object', properties: { total: { type: 'number' } } } },
+          },
+        },
+      },
+    },
+    {
+      responses: {
+        '200': {
+          content: {
+            'application/json': { schema: { type: 'object', properties: { total: { type: 'string' } } } },
+            'application/xml': { schema: { type: 'object', properties: { total: { type: 'boolean' } } } },
+          },
+        },
+      },
+    },
+    configOf({ responseFields: ['total'] }),
+  );
+  assert.equal(divergent.reasons.length, 2, 'different target types are not the same change');
+}
+
 // A removed field that IS consumed breaks; one that is not is ignored; v1 keeps flagging both.
 {
   const before = jsonSchema({ id: { type: 'string' }, email: { type: 'string' } });

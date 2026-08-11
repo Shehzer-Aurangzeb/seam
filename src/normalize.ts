@@ -24,6 +24,45 @@ function members(value: unknown): Map<string, unknown> {
   return new Map(array.map((member) => [JSON.stringify(member), member]));
 }
 
+/**
+ * A media type is the segment directly under `content`. The `/` is what keeps a response field that
+ * happens to be called `content` from having its own children blinded.
+ */
+const MEDIA_TYPE = /^[\w.+-]+\/[\w.+-]+$/;
+
+const mediaBlind = (path: (string | number)[]): (string | number)[] =>
+  path.map((segment, i) =>
+    path[i - 1] === 'content' && typeof segment === 'string' && MEDIA_TYPE.test(segment) ? '*' : segment,
+  );
+
+/** Same edit, same place, same values — differing only in which media type declared the schema. */
+const mediaKey = (change: Difference) =>
+  JSON.stringify([
+    change.type,
+    mediaBlind(change.path),
+    'value' in change ? change.value : null,
+    'oldValue' in change ? change.oldValue : null,
+  ]);
+
+/**
+ * One schema served under several media types is ONE contract change, but it lives in the document
+ * once per type, so microdiff reports it once per type — Petstore's json+xml pet gave two entries and
+ * two identical reasons for every single edit. Dropping the repeats here rather than in `classify`
+ * keeps `reasons[i]` paired with `rawChanges[i]`, which the report relies on.
+ *
+ * Only exact repeats collapse. Where json and xml genuinely describe different shapes, the changes
+ * differ in path or value and both survive.
+ */
+function dedupeMediaTypes(changes: Difference[]): Difference[] {
+  const seen = new Set<string>();
+  return changes.filter((change) => {
+    const key = mediaKey(change);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function normalizeRawChanges(
   rawChanges: Difference[],
   oldOp: unknown,
@@ -50,5 +89,6 @@ export function normalizeRawChanges(
     }
   }
 
-  return [...kept, ...synthetic];
+  // After the set re-derivation, so a `required` array declared under two media types collapses too.
+  return dedupeMediaTypes([...kept, ...synthetic]);
 }

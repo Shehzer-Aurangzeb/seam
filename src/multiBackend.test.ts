@@ -10,6 +10,7 @@ import {
   isTestFile,
   isValidRef,
   normalizeRef,
+  parseInitArgs,
   resolveImport,
   signalScore,
   slug,
@@ -233,6 +234,14 @@ assert.deepEqual(
   assert.equal(r('@/styles.css'), undefined, 'a non-source import never resolves — the scan only walked source');
   assert.equal(r('../../../etc/passwd'), undefined, 'nothing outside the scanned set, ever');
 }
+
+// parseInitArgs: a dropped path is indistinguishable from the user never passing one.
+assert.deepEqual(parseInitArgs(['src']), { path: 'src' });
+assert.deepEqual(parseInitArgs([]), { path: undefined });
+assert.deepEqual(parseInitArgs(['src', '--repo', 'o/n@dev']), { path: 'src', repo: 'o/n@dev' });
+assert.deepEqual(parseInitArgs(['--repo', 'o/n', 'src']), { path: 'src', repo: 'o/n' });
+assert.deepEqual(parseInitArgs(['--repo', 'o/n']), { path: undefined, repo: 'o/n' }, 'a repo with no path scans its root');
+assert.throws(() => parseInitArgs(['src', '--repo']), /--repo needs a value/);
 
 // ---------- parseRepo: a wrong ref silently scans the wrong code, so this must not guess ----------
 

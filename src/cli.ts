@@ -7,7 +7,7 @@ import { fetchSpec } from './fetchSpec.js';
 import { classifyAll } from './classify.js';
 import { diffSpecs } from './diff.js';
 import { explainChanges } from './explain.js';
-import { runInit } from './init.js';
+import { parseInitArgs, runInit } from './init.js';
 import { printFindings, printReport } from './report.js';
 import { readSnapshot, snapshotPath, writeSnapshot } from './snapshot.js';
 import { verify } from './verify.js';
@@ -68,10 +68,8 @@ async function main() {
     // `init <path>` scans a local directory; `init [path] --repo owner/name[@ref]` scans a repo seam
     // does not have on disk, where the path narrows to a subdirectory of it.
     if (subcommand === 'init') {
-      const at = rest.indexOf('--repo');
-      const repo = at === -1 ? undefined : rest[at + 1];
-      if (at !== -1 && !repo) throw new Error('--repo needs a value: --repo owner/name[@branch]');
-      await runInit(rest.filter((arg, i) => i !== at && i !== at + 1)[0], repo);
+      const { path, repo } = parseInitArgs(rest);
+      await runInit(path, repo);
       return;
     }
 

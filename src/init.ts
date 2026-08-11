@@ -368,6 +368,20 @@ function gather(root: string): { files: SourceFile[]; counts: ScanCounts } {
   };
 }
 
+/**
+ * `init <path>` / `init [path] --repo owner/name[@ref]`, split into the two things runInit needs.
+ * Lives here rather than in cli.ts so it can be tested without importing a module that runs `main()`:
+ * with no `--repo`, `indexOf` returned -1 and the flag-stripping filter dropped argument 0 — the path
+ * itself — so a plain `init src` failed as if the user had never passed one.
+ */
+export function parseInitArgs(rest: string[]): { path?: string; repo?: string } {
+  const at = rest.indexOf('--repo');
+  if (at === -1) return { path: rest[0] };
+  const repo = rest[at + 1];
+  if (!repo) throw new Error('--repo needs a value: --repo owner/name[@branch]');
+  return { path: rest.filter((_, i) => i !== at && i !== at + 1)[0], repo };
+}
+
 export async function runInit(target: string | undefined, repoSpec?: string): Promise<void> {
   if (!target && !repoSpec) {
     throw new Error(

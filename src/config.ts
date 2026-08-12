@@ -15,7 +15,7 @@ export const ConsumedRouteSchema = z.object({
   path: z.string().regex(/^\/.+/, 'path must start with "/"'),
   /** Headers this call site adds on top of `globalHeaders`. Lowercase. */
   headers: z.array(z.string()).optional(),
-  // ponytail: accepted and carried, but nothing reads it yet — request-field drift still uses v1 rules.
+  /** Request paths the frontend sends: `filters.status`, `items[].sku`. */
   requestFields: z.array(z.string()).optional(),
   /** Response paths the frontend actually reads: `profile.firstName`, `items[].sku`. */
   responseFields: z.array(z.string()).optional(),

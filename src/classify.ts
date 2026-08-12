@@ -30,6 +30,8 @@ export type ClassifyContext = {
   headers?: string[];
   /** Response paths the frontend reads. Undefined = every field counts as read. */
   responseFields?: string[];
+  /** Request paths the frontend sends. Undefined = every field counts as sent. */
+  requestFields?: string[];
   /** Needed only to resolve `components.securitySchemes` into header names. */
   oldSpec?: unknown;
   newSpec?: unknown;
@@ -130,6 +132,18 @@ function classifyOne(
   // stops reporting is worse than one that over-reports.
   if (inResponse && ctx.responseFields?.length && !isConsumedField(change, ctx.responseFields)) {
     return { severity: 'ignore', reason: `${what} is not read by the frontend` };
+  }
+
+  // The same gate on the send side. A CREATE is deliberately never gated: a field that did not exist
+  // cannot be in the config, and one that arrives required is breaking precisely BECAUSE the frontend
+  // does not send it. So this only silences edits to fields that already existed and that we never send.
+  if (
+    change.path.includes('requestBody') &&
+    change.type !== 'CREATE' &&
+    ctx.requestFields?.length &&
+    !isConsumedField(change, ctx.requestFields)
+  ) {
+    return { severity: 'ignore', reason: `${what} is not sent by the frontend` };
   }
 
   if (typeof last === 'string' && TEXT_FIELDS.has(last)) {
@@ -301,6 +315,7 @@ export function classifyAll(
       classify(change, normalized, {
         headers: effectiveHeaders(config, route),
         responseFields: route.responseFields,
+        requestFields: route.requestFields,
         oldSpec,
         newSpec,
       }),

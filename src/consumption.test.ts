@@ -200,6 +200,55 @@ const expect = (r: { severity: Severity; reasons: string[] }, severity: Severity
   assert.equal(divergent.reasons.length, 2, 'different target types are not the same change');
 }
 
+// The send side, gated the same way — with the exception that is the whole reason to gate it: a field
+// the frontend does NOT send becoming required is breaking precisely because it does not send it.
+{
+  const body = (properties: Record<string, unknown>, required?: string[]) => ({
+    requestBody: {
+      content: {
+        'application/json': { schema: { type: 'object', properties, ...(required ? { required } : {}) } },
+      },
+    },
+    responses: { '200': { description: 'ok' } },
+  });
+  const props = { status: { type: 'string' }, internalFlag: { type: 'string' } };
+
+  expect(
+    check(body(props), body({ ...props, status: { type: 'integer' } }), configOf({ requestFields: ['status'] })),
+    'breaking',
+    'a retyped field the frontend sends',
+  );
+  expect(
+    check(body(props), body({ ...props, internalFlag: { type: 'integer' } }), configOf({ requestFields: ['status'] })),
+    'ignore',
+    'a retyped field the frontend never sends',
+  );
+  expect(
+    check(body(props), body({ ...props, internalFlag: { type: 'integer' } }), configOf({})),
+    'breaking',
+    'v1 config: nobody looked, so everything still counts as sent',
+  );
+  expect(
+    check(body(props, ['status']), body(props, ['status', 'internalFlag']), configOf({ requestFields: ['status'] })),
+    'breaking',
+    'an unsent field becoming required is the case the gate must never swallow',
+  );
+  expect(
+    check(body(props, ['status', 'internalFlag']), body(props, ['status']), configOf({ requestFields: ['status'] })),
+    'ignore',
+    'that same field ceasing to be required is nothing to us',
+  );
+  expect(
+    check(
+      body(props, ['status']),
+      body({ ...props, tenantId: { type: 'string' } }, ['status', 'tenantId']),
+      configOf({ requestFields: ['status'] }),
+    ),
+    'breaking',
+    'a brand-new required field can never be in the config, so it must not be gated',
+  );
+}
+
 // A removed field that IS consumed breaks; one that is not is ignored; v1 keeps flagging both.
 {
   const before = jsonSchema({ id: { type: 'string' }, email: { type: 'string' } });

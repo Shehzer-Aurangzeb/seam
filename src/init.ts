@@ -88,6 +88,12 @@ HEADERS — names only, NEVER values. A header value is a secret; a header name 
 - "headers" (per route): what that specific call site adds on top of the global ones, e.g. X-Idempotency-Key, X-Request-Id, a per-call Content-Type.
 - Write every header name in lowercase.
 
+REQUEST FIELDS — "requestFields" (per route) is every path the frontend SENDS in the request BODY. Same notation as responseFields below, and the same rule: only what you can see in the code.
+- Read the object passed as the body: an inline literal, a variable built just above the call, or the Zod schema or TypeScript type the body is typed as. A body typed by a schema sends every field that schema declares.
+- Query-string and path parameters are NOT request fields. Body only. A GET with no body has none — leave the key out.
+- Strip the transport wrapper the same way: axios.post(url, { filters: { status } }) -> "filters.status", body.items.map(i => i.sku) -> "items[].sku".
+- A body forwarded wholesale by a BFF route handler is passthrough, not evidence: trace back to where the caller BUILT it and collect the fields there.
+
 RESPONSE FIELDS — "responseFields" (per route) is every path the frontend READS off that response. Look in the calling code, the components and hooks that consume it, and the Zod schema or TypeScript type the response is parsed into.
 - LOOK DOWNSTREAM OF THE FETCH. A BFF route handler usually forwards the whole response untouched (return Response.json(await upstream.json())) — that is passthrough, not consumption, and tells you nothing about which fields matter. The real reads live in the hooks, transform functions, components and response types that consume the handler's output. Trace from the route to those, and collect the field reads there.
 - Strip the transport wrapper used to reach the payload: data.user.email -> "user.email", res.data.total -> "total", (await r.json()).id -> "id".
@@ -101,12 +107,12 @@ RESPONSE FIELDS — "responseFields" (per route) is every path the frontend READ
 
 Some files are labelled "=== path (imported by a call site) ===". They are included because a file that DOES call the backend imports them — usually a wrapper, a transform, a hook or a type module. Use them to follow a chain: which base URL a wrapper ultimately reads, and what the caller's response data flows into once it leaves the fetch. A field read you find in one of these files counts as read for the route whose response reaches it. Do not treat such a file as evidence of a new operation on its own.
 
-NEVER emit an empty array for any of these three lists. Leave the key out entirely instead. An omitted list means "monitor the whole contract"; an empty one reads as a deliberate "nothing here matters" and would hide real breakage.
+NEVER emit an empty array for any of these lists. Leave the key out entirely instead. An omitted list means "monitor the whole contract"; an empty one reads as a deliberate "nothing here matters" and would hide real breakage.
 
 For specUrl: return a URL ONLY if an OpenAPI/Swagger spec or API docs URL is plainly visible in the code you were given. Do not guess it from a base URL, do not construct it, do not infer it from environment variable names. If it is not plainly there, return an empty string.
 
 Return JSON ONLY — no markdown fences, no commentary — matching exactly:
-{"specUrl":"...","backends":[{"ref":"...","globalHeaders":["..."],"consumes":[{"method":"...","path":"...","headers":["..."],"responseFields":["..."]}]}]}`;
+{"specUrl":"...","backends":[{"ref":"...","globalHeaders":["..."],"consumes":[{"method":"...","path":"...","headers":["..."],"requestFields":["..."],"responseFields":["..."]}]}]}`;
 
 /** `context` files were pulled in by an import, not by scoring — the payload labels them so the model knows. */
 type SourceFile = { rel: string; text: string; context: boolean };
@@ -603,6 +609,7 @@ async function draftConfigs(root: string): Promise<void> {
   const describeRoute = (route: Route) => {
     const parts = [
       route.headers?.length && `${route.headers.length} header(s)`,
+      route.requestFields?.length && `${route.requestFields.length} request field(s)`,
       route.responseFields?.length && `${route.responseFields.length} response field(s)`,
     ].filter(Boolean);
     return parts.length > 0 ? ` ${dim(`(${parts.join(', ')})`)}` : '';

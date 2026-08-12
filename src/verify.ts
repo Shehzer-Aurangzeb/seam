@@ -95,6 +95,16 @@ export function verify(config: Config, spec: unknown): Finding[] {
       }
     }
 
+    // ponytail: `requestFields` is deliberately NOT checked here, and the obvious check — "the spec
+    // requires a body field the config does not list" — must not be added. `requestFields` records
+    // what could be SEEN in the code, so a field's absence is not evidence the frontend omits it.
+    // Measured against the live specs with a freshly generated config: 8 of 12 platform routes and
+    // 1 of 3 idp routes would have produced a finding, including POST /users/query "missing"
+    // sortColumn and sortDirection, which it plainly sends. The rule this follows is the one
+    // `resolveField` already encodes — accuse only from what is DEMONSTRABLE. So request fields may
+    // silence a change in `check` and may never raise a finding here. Revisit only if the config ever
+    // records request bodies exhaustively rather than observationally.
+
     // Headers. Undefined means the config never recorded what this route sends, so "we don't send it"
     // is not something we know.
     const sent = effectiveHeaders(config, route);

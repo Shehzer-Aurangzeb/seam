@@ -307,7 +307,7 @@ assert.throws(() => parseInitArgs(['src', '--repo']), /--repo needs a value/);
 
 // ---------- parseRepo: a wrong ref silently scans the wrong code, so this must not guess ----------
 
-assert.deepEqual(parseRepo('Dedicate-com/platform-web'), { owner: 'Dedicate-com', name: 'platform-web' });
+assert.deepEqual(parseRepo('Acme-Corp/platform-web'), { owner: 'Acme-Corp', name: 'platform-web' });
 assert.deepEqual(parseRepo('  owner/name  '), { owner: 'owner', name: 'name' }, 'surrounding space is trimmed');
 assert.deepEqual(parseRepo('owner/name@dev'), { owner: 'owner', name: 'name', ref: 'dev' });
 assert.deepEqual(

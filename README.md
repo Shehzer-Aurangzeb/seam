@@ -69,10 +69,25 @@ pnpm init ../my-frontend/src
 # Fill in specUrl for each backend in config/backends.json, then:
 pnpm check                                        # one config, or pick interactively
 pnpm check driftcheck.platform-service-url.config.json
+
+# "Do the frontend and the spec agree right now?" — one spec, no snapshot.
+pnpm dev verify driftcheck.platform-service-url.config.json
 ```
 
 The first `check` on a backend captures a baseline and reports nothing. Every run after that compares
 against it.
+
+## `check` vs `verify`
+
+`check` is a **changelog**: two specs, "what did the backend change since last run?" It needs a
+snapshot, and it cannot see your frontend being *fixed*, because fixing a frontend doesn't touch the
+spec.
+
+`verify` is a **checklist**: one spec, "does everything the frontend uses still exist?" No snapshot,
+no memory of previous runs — run it a hundred times and it answers the same. That is what lets an
+automatically-opened issue close itself once the disagreement is gone.
+
+Both exit `2` on a breaking finding, `1` only when the tool itself failed.
 
 ## Configuration
 
@@ -144,15 +159,16 @@ A change to a route absent from `consumes` is never reported at all.
 
 ## Status
 
-Working: `init`, `check`, multi-backend configs, header resolution, response-field scoping.
+Working: `init` (local directory or a GitHub repo it never clones), `check`, `verify`, multi-backend
+configs, header resolution, request- and response-field scoping.
 
 Not built yet:
 
-- **`verify` mode.** `check` compares spec-to-spec — "what changed since last run?" It cannot see your
-  frontend being *fixed*, because that doesn't touch the spec. A stateless "do these two agree right
-  now?" pass is what makes an issue close on its own.
-- **The app.** Sign in with GitHub, connect a frontend repo and its backends, re-scan on merge, open
-  and close issues automatically.
+- **Retype detection in `verify`.** `check` catches retypes; `verify` can't, because the config
+  records which fields are read, not what type they were. Removal is what auto-close needs, and that
+  works.
+- **The loop.** A scheduled `verify` that opens a GitHub issue per finding and closes it when the
+  finding disappears.
 
 ## Tests
 

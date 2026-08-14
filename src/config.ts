@@ -7,6 +7,8 @@ export const CONFIG_DIR = 'config';
 export const DEFAULT_CONFIG = 'driftcheck.config.json';
 /** specUrl + basePath for every backend, in one place. Not a `.config.json`, so `listConfigs` skips it. */
 export const BACKENDS_FILE = 'backends.json';
+/** `loadConfig` error code for "this backend has no spec to check" — a skip, not a failure. */
+export const NO_SPEC_URL = 'NO_SPEC_URL';
 
 // v2 fields are all optional and all mean the same thing when absent: "we never looked, so monitor
 // everything". A v1 config keeps v1's conservative behaviour without being touched.
@@ -121,9 +123,14 @@ export function loadConfig(path = DEFAULT_CONFIG): Config {
 
   // init leaves specUrl blank on purpose, so say that plainly instead of failing as a URL validation error.
   if (!merged.specUrl) {
-    throw new Error(
-      `specUrl not set for '${key}' — add it under "${key}" in ${CONFIG_DIR}/${BACKENDS_FILE} ` +
-        `(or directly in ${path}) before running.`,
+    // Tagged, not just worded: `sync` walks every config and must skip the ones that never had a spec
+    // (Auth0, the admin frontend) while still failing loudly on a config that is genuinely broken.
+    throw Object.assign(
+      new Error(
+        `specUrl not set for '${key}' — add it under "${key}" in ${CONFIG_DIR}/${BACKENDS_FILE} ` +
+          `(or directly in ${path}) before running.`,
+      ),
+      { code: NO_SPEC_URL },
     );
   }
   return ConfigSchema.parse(merged);

@@ -10,6 +10,7 @@ import { explainChanges } from './explain.js';
 import { parseInitArgs, runInit } from './init.js';
 import { printFindings, printReport } from './report.js';
 import { readSnapshot, snapshotPath, writeSnapshot } from './snapshot.js';
+import { runSync } from './sync.js';
 import { verify } from './verify.js';
 
 /** Exit 2, never 1: a caller has to tell "drift found" apart from "the tool broke". */
@@ -82,6 +83,15 @@ async function main() {
       const findings = verify(config, await fetchSpec(config.specUrl));
       printFindings(findings, config.consumes);
       if (findings.some((f) => f.severity === 'breaking')) process.exitCode = DRIFT_EXIT;
+      return;
+    }
+
+    // sync runs verify across every backend and makes a repo's open issues match the findings. No
+    // snapshot and no LLM call, which is what makes it cheap enough to run on a schedule.
+    if (subcommand === 'sync') {
+      const at = rest.indexOf('--repo');
+      if (at !== -1 && !rest[at + 1]) throw new Error('--repo needs a value: --repo owner/name');
+      await runSync({ repo: at === -1 ? undefined : rest[at + 1], dryRun: rest.includes('--dry-run') });
       return;
     }
 

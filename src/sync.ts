@@ -54,13 +54,15 @@ const body = (backend: string, configPath: string, specUrl: string, finding: Fin
     `| backend | \`${backend}\` |`,
     `| config | \`${configPath}\` |`,
     `| spec | ${specUrl} |`,
-    finding.subject ? `| subject | \`${finding.subject}\` |` : '',
+    // null, not '': the empty strings above are deliberate blank lines, and markdown needs them —
+    // without one before the table, GitHub renders the pipes as literal text.
+    finding.subject ? `| subject | \`${finding.subject}\` |` : null,
     '',
     'Opened by seam. It closes itself on the next run after `seam verify` stops reporting this.',
     '',
     markerOf(backend, finding),
   ]
-    .filter((line) => line !== '')
+    .filter((line) => line !== null)
     .join('\n');
 
 /**

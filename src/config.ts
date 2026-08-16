@@ -21,6 +21,13 @@ export const ConsumedRouteSchema = z.object({
   requestFields: z.array(z.string()).optional(),
   /** Response paths the frontend actually reads: `profile.firstName`, `items[].sku`. */
   responseFields: z.array(z.string()).optional(),
+  /**
+   * This frontend serves the same path from its own API handler (a Next.js BFF route). Set by init
+   * from the file tree, never by the model. It only means "absence from a backend spec proves
+   * nothing here" — every other check still applies, because the path is usually a real backend route
+   * that the handler forwards to unchanged.
+   */
+  served: z.boolean().optional(),
 });
 
 export type ConsumedRoute = z.infer<typeof ConsumedRouteSchema>;

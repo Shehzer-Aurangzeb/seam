@@ -163,4 +163,33 @@ assert.deepEqual(
   ]);
 }
 
+// A path the frontend serves itself is absent from every backend spec by definition. Excusing that
+// must not excuse anything else, or a BFF-mirrored route stops being checked at all.
+{
+  const bff = (extra: object) => ({
+    specUrl: 'https://x.test/spec.json',
+    consumes: [{ method: 'GET' as const, path: '/auth/session', served: true, ...extra }],
+  });
+
+  assert.deepEqual(verify(bff({}), spec).map((f) => f.code), [], 'its own handler is not a deleted route');
+  assert.deepEqual(
+    verify({ ...bff({}), consumes: [{ method: 'GET', path: '/auth/session' }] }, spec).map((f) => f.code),
+    ['no-routes-matched'],
+    'the same route unmarked is still reported',
+  );
+
+  // Marked AND present in the spec — the common case, since a BFF usually forwards the path unchanged.
+  const served: Config = {
+    specUrl: 'https://x.test/spec.json',
+    consumes: [
+      { method: 'GET', path: '/orders/{orderId}', served: true, responseFields: ['customer.phone'], headers: [] },
+    ],
+  };
+  assert.deepEqual(
+    verify(served, spec).map((f) => f.code),
+    ['required-header-not-sent', 'response-field-missing'],
+    'a served route that exists is checked exactly like any other',
+  );
+}
+
 console.log('ok');

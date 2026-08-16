@@ -5,7 +5,7 @@ import { BACKENDS_FILE, CONFIG_DIR, ConsumedRouteSchema, DEFAULT_CONFIG, backend
 import { bold, cyan, dim, green } from './color.js';
 import { BIG_PAYLOAD_MODEL, completeJson } from './llm.js';
 import { downloadRepo, githubToken, parseRepo } from './github.js';
-import { operationKey } from './scope.js';
+import { normalizePath, operationKey } from './scope.js';
 
 // Bytes are the real budget; the file count is just a backstop. It used to be 40 because scoring was
 // a word-count that let noise in — now that only genuine call sites score above zero, 40 was cutting
@@ -389,7 +389,48 @@ export function chunkFiles(
   return chunks;
 }
 
-function gather(root: string): { chunks: SourceFile[][]; counts: ScanCounts } {
+/**
+ * The paths this frontend SERVES itself, read off the file tree rather than guessed by the model.
+ *
+ * A Next.js `app/api/entities/route.ts` is a BFF endpoint: the frontend calls `/api/entities`, its own
+ * handler, which then calls the backend. Both show up in the same scanned file, so the model reports
+ * both — and the handler's own path does not exist in any backend spec, so `verify` calls it a deleted
+ * route. Measured on platform-web: 7 of 12 breaking findings were this, and every one of them was a
+ * path the frontend serves.
+ *
+ * Dropping them loses nothing, because the outbound call inside the handler is captured separately —
+ * `/entities` and `/platform-entities` both came back, from the same file.
+ *
+ * ponytail: Next.js only. Remix, SvelteKit and Nuxt spell their handlers differently; add them when
+ * someone points seam at one.
+ */
+export function servedPaths(files: string[]): Set<string> {
+  const served = new Set<string>();
+  for (const file of files) {
+    const posix = file.replaceAll('\\', '/');
+    // app/api/<rest>/route.ts, or pages/api/<rest>.ts — the two Next.js conventions.
+    const app = /\/app\/api\/(.+)\/route\.[jt]sx?$/.exec(posix);
+    const pages = /\/pages\/api\/(.+)\.[jt]sx?$/.exec(posix);
+    const rest = app?.[1] ?? pages?.[1]?.replace(/\/index$/, '');
+    if (rest === undefined) continue;
+
+    const path = rest
+      .split('/')
+      // Route groups organise files without appearing in the URL.
+      .filter((segment) => !/^\(.*\)$/.test(segment))
+      // [id] and [...slug] are both one path parameter as far as identity goes.
+      .map((segment) => segment.replace(/^\[+\.{0,3}(.+?)\]+$/, '{$1}'))
+      .join('/');
+
+    // Both spellings: the model reports the fetch URL (`/api/entities`) about as often as the route
+    // it resolves to (`/entities`), which is the run-to-run churn seen on these same three paths.
+    served.add(normalizePath(`/${path}`));
+    served.add(normalizePath(`/api/${path}`));
+  }
+  return served;
+}
+
+function gather(root: string): { chunks: SourceFile[][]; counts: ScanCounts; served: Set<string> } {
   const found = candidates(root);
   // Tests are dropped BEFORE scoring: they hardcode mock base URLs that score as real call sites.
   const production = found.filter((f) => !isTestFile(f));
@@ -446,6 +487,9 @@ function gather(root: string): { chunks: SourceFile[][]; counts: ScanCounts } {
   const sent = selected.filter((c) => !c.context).length;
   const chunks = chunkFiles(selected, importsOf);
   return {
+    // Every walked file, not just the sent ones: a handler that makes no backend call still owns its
+    // path, and the model can still name that path from the file that fetches it.
+    served: servedPaths(found),
     chunks: chunks.map((chunk) =>
       chunk.map((c) => ({
         rel: relative(root, c.file) || basename(c.file),
@@ -536,7 +580,7 @@ async function draftChunk(files: SourceFile[], index: number, total: number): Pr
 }
 
 async function draftConfigs(root: string): Promise<void> {
-  const { chunks, counts } = gather(root);
+  const { chunks, counts, served } = gather(root);
   if (counts.walked === 0) throw new Error(`No .ts/.tsx/.js/.jsx files found under ${root}.`);
   if (counts.matched === 0) {
     throw new Error(
@@ -569,7 +613,27 @@ async function draftConfigs(root: string): Promise<void> {
     );
   }
 
-  const { groups: backends, folded } = clusterBackends(returned);
+  // Marked, not dropped. Whether a self-served path is also a real backend route is a question only
+  // the spec can answer, and init never sees one: platform-web serves /api/asset-categories/{id} AND
+  // the backend declares /asset-categories/{id}, so dropping it would delete real coverage — it was
+  // 31 of 41 platform routes, including the retype case this tool was proven on. `verify` has the
+  // spec, so it decides there.
+  let selfServed = 0;
+  for (const backend of returned) {
+    for (const route of backend.consumes) {
+      if (!served.has(normalizePath(route.path))) continue;
+      route.served = true;
+      selfServed++;
+    }
+  }
+  if (selfServed > 0) {
+    console.log(
+      `\n${selfServed} route(s) are also served by this frontend's own API handlers — ` +
+        dim('marked, so a missing one is not reported as a deleted backend route.'),
+    );
+  }
+
+  const { groups: backends, folded } = clusterBackends(returned.filter((b) => b.consumes.length > 0));
   if (folded.length > 0) {
     console.log(
       `\nIgnored ${folded.length} group(s) not named after a base URL (${folded.join(', ')}) — their routes were folded into the largest backend.`,

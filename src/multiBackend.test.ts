@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { backendKey, loadConfig, resolveConfigPath } from './config.js';
+import { normalizePath } from './scope.js';
 import {
   chunkFiles,
   clusterBackends,
@@ -13,6 +14,7 @@ import {
   normalizeRef,
   parseInitArgs,
   resolveImport,
+  servedPaths,
   signalScore,
   slug,
 } from './init.js';
@@ -323,5 +325,36 @@ assert.deepEqual(
 assert.deepEqual(parseRepo('a/b.js'), { owner: 'a', name: 'b.js' }, 'a dot is legal in a repo name');
 for (const bad of ['', 'name', 'owner/', '/name', 'https://github.com/owner/name', 'owner/name/extra'])
   assert.throws(() => parseRepo(bad), /Not a repo/, bad);
+
+// ---------- servedPaths: a path the frontend serves can never be missing from a backend spec ----------
+{
+  // The real shapes from platform-web, which produced 7 of 12 false breaking findings.
+  const served = servedPaths([
+    '/repo/src/app/api/auth/session/route.ts',
+    '/repo/src/app/api/entities/route.ts',
+    '/repo/src/app/api/entities/[id]/route.ts',
+    '/repo/src/app/api/documents/[...path]/route.ts',
+    '/repo/src/app/api/(internal)/health/route.ts',
+    '/repo/src/pages/api/legacy/thing.ts',
+    '/repo/src/pages/api/legacy/index.ts',
+    // Not handlers: a page, a client, and a file merely called route.ts outside app/api.
+    '/repo/src/app/products/page.tsx',
+    '/repo/src/lib/api/client.ts',
+    '/repo/src/app/route.ts',
+  ]);
+
+  const has = (path: string) => served.has(normalizePath(path));
+  assert.ok(has('/auth/session') && has('/api/auth/session'), 'both spellings of a handler path are served');
+  assert.ok(has('/entities/{id}'), 'a dynamic segment is a path parameter');
+  assert.ok(has('/entities/{anythingElse}'), 'param names never decide identity');
+  assert.ok(has('/documents/{path}'), 'a catch-all is one parameter');
+  assert.ok(has('/health'), 'a route group organises files, it is not part of the URL');
+  assert.ok(has('/legacy/thing') && has('/legacy'), 'pages/api, with index meaning the directory itself');
+
+  assert.ok(has('/entities'), 'the handler beside the dynamic one is served too');
+  assert.ok(!has('/products'), 'a page is not an API handler');
+  assert.ok(!has('/lib/api/client'), 'an api client is not an api route');
+  assert.ok(!has('/'), 'route.ts outside app/api serves nothing');
+}
 
 console.log('ok');

@@ -77,7 +77,12 @@ export function verify(config: Config, spec: unknown): Finding[] {
   for (const route of config.consumes) {
     const op = specOps.get(operationKey(route.method, `${config.basePath ?? ''}${route.path}`));
     if (op === undefined) {
-      missing.push(route);
+      // A path the frontend serves itself is absent from every backend spec by definition — its own
+      // /api/auth/session handler is not a route this backend deleted. Measured on platform-web: 7 of
+      // 12 breaking findings were exactly this. The cost is a real deletion going unreported when a
+      // BFF mirrors the backend path, which is the trade the alternative could not make without
+      // deleting 31 of 41 routes' coverage outright.
+      if (!route.served) missing.push(route);
       continue;
     }
 

@@ -1,5 +1,5 @@
 import { bold, cyan, dim, green, red } from './color.js';
-import { backendKey, listConfigs, loadConfig, NO_SPEC_URL } from './config.js';
+import { backendKey, CONFIG_DIR, listConfigs, loadConfig, NO_SPEC_URL } from './config.js';
 import { fetchSpec } from './fetchSpec.js';
 import { githubToken, parseRepo, type Repo } from './github.js';
 import { type Finding, verify } from './verify.js';
@@ -128,9 +128,21 @@ async function openIssues(repo: Repo, token: string): Promise<Issue[]> {
   return (raw ?? []).filter((i) => !i.pull_request).map(({ number, title, body }) => ({ number, title, body: body ?? '' }));
 }
 
-export type SyncOptions = { repo?: string; dryRun?: boolean };
+export type SyncOptions = {
+  repo?: string;
+  dryRun?: boolean;
+  /** Which project's configs to verify. Defaults to the single-project layout, `config/`. */
+  configDir?: string;
+  /** Supplied by the webhook service, which holds a GitHub App installation token per repo. */
+  token?: string;
+};
 
-export async function runSync({ repo: repoSpec, dryRun = false }: SyncOptions): Promise<void> {
+export async function runSync({
+  repo: repoSpec,
+  dryRun = false,
+  configDir = CONFIG_DIR,
+  token: suppliedToken,
+}: SyncOptions): Promise<void> {
   // GITHUB_REPOSITORY is set for free inside Actions, which is where this normally runs.
   const spec = repoSpec ?? process.env.GITHUB_REPOSITORY;
   if (!spec) {
@@ -138,8 +150,10 @@ export async function runSync({ repo: repoSpec, dryRun = false }: SyncOptions): 
   }
   const repo = parseRepo(spec);
 
-  const configs = listConfigs();
-  if (configs.length === 0) throw new Error('No configs to verify — run `driftcheck init <path>` first.');
+  const configs = listConfigs(configDir);
+  if (configs.length === 0) {
+    throw new Error(`No configs to verify in ${configDir}/ — run \`driftcheck init <path>\` first.`);
+  }
 
   const desired: Desired[] = [];
   const verified = new Set<string>();
@@ -148,7 +162,7 @@ export async function runSync({ repo: repoSpec, dryRun = false }: SyncOptions): 
   for (const configPath of configs) {
     const backend = backendKey(configPath);
     try {
-      const config = loadConfig(configPath);
+      const config = loadConfig(configPath, configDir);
       const findings = verify(config, await fetchSpec(config.specUrl));
       const reported = findings.filter((f) => f.severity === REPORTED);
       for (const finding of reported) {
@@ -172,7 +186,9 @@ export async function runSync({ repo: repoSpec, dryRun = false }: SyncOptions): 
     }
   }
 
-  const token = githubToken();
+  // The CLI borrows a token from `gh`; the webhook service mints a scoped installation token and
+  // passes it in, so nothing about a run depends on a developer being logged in.
+  const token = suppliedToken ?? githubToken();
   const { open, close } = reconcile(desired, await openIssues(repo, token), verified);
   const where = `${repo.owner}/${repo.name}`;
 

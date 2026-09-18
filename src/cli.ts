@@ -8,6 +8,7 @@ import { classifyAll } from './classify.js';
 import { diffSpecs } from './diff.js';
 import { explainChanges } from './explain.js';
 import { parseInitArgs, runInit } from './init.js';
+import { projectByName, readProjects } from './projects.js';
 import { printFindings, printReport } from './report.js';
 import { readSnapshot, snapshotPath, writeSnapshot } from './snapshot.js';
 import { runSync } from './sync.js';
@@ -89,9 +90,23 @@ async function main() {
     // sync runs verify across every backend and makes a repo's open issues match the findings. No
     // snapshot and no LLM call, which is what makes it cheap enough to run on a schedule.
     if (subcommand === 'sync') {
-      const at = rest.indexOf('--repo');
-      if (at !== -1 && !rest[at + 1]) throw new Error('--repo needs a value: --repo owner/name');
-      await runSync({ repo: at === -1 ? undefined : rest[at + 1], dryRun: rest.includes('--dry-run') });
+      const flag = (name: string) => {
+        const at = rest.indexOf(name);
+        if (at === -1) return undefined;
+        if (!rest[at + 1]) throw new Error(`${name} needs a value`);
+        return rest[at + 1];
+      };
+      const dryRun = rest.includes('--dry-run');
+      const name = flag('--project');
+      // A project names its own frontend repo and config directory, so --repo is for the
+      // single-project layout only and the two are never combined.
+      if (name) {
+        const project = projectByName(readProjects(), name);
+        console.log(`Project: ${bold(project.name)} -> ${cyan(project.issuesRepo)} (${project.configDir}/)`);
+        await runSync({ repo: project.issuesRepo, configDir: project.configDir, dryRun });
+        return;
+      }
+      await runSync({ repo: flag('--repo'), dryRun });
       return;
     }
 

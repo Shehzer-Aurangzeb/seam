@@ -76,31 +76,35 @@ export type Registry = z.infer<typeof RegistrySchema>;
  * neither, so deleting and re-running init never loses them. Missing file is normal (v1 layout);
  * a malformed one is loud, because silently ignoring it would check the wrong spec.
  */
-export function readRegistry(): Registry {
+export function readRegistry(dir = CONFIG_DIR): Registry {
   let raw: string;
   try {
-    raw = readFileSync(resolve(process.cwd(), CONFIG_DIR, BACKENDS_FILE), 'utf8');
+    raw = readFileSync(resolve(process.cwd(), dir, BACKENDS_FILE), 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(`Could not read ${CONFIG_DIR}/${BACKENDS_FILE}: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`Could not read ${dir}/${BACKENDS_FILE}: ${err instanceof Error ? err.message : err}`);
   }
   try {
     return RegistrySchema.parse(JSON.parse(raw));
   } catch (err) {
-    throw new Error(`${CONFIG_DIR}/${BACKENDS_FILE} is not valid: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`${dir}/${BACKENDS_FILE} is not valid: ${err instanceof Error ? err.message : err}`);
   }
 }
 
-/** A bare filename means "in config/"; anything with a path separator is taken as given. */
-export function resolveConfigPath(arg: string): string {
+/**
+ * A bare filename means "in the config directory"; anything with a path separator is taken as given.
+ * `dir` is how one seam process serves several projects — each has its own directory of configs, and
+ * nothing else about a run changes.
+ */
+export function resolveConfigPath(arg: string, dir = CONFIG_DIR): string {
   const inConfigDir = !isAbsolute(arg) && !arg.includes('/');
-  return resolve(process.cwd(), inConfigDir ? `${CONFIG_DIR}/${arg}` : arg);
+  return resolve(process.cwd(), inConfigDir ? `${dir}/${arg}` : arg);
 }
 
-/** Config files in config/, sorted. Empty if the folder does not exist. */
-export function listConfigs(): string[] {
+/** Config files in the config directory, sorted. Empty if the folder does not exist. */
+export function listConfigs(dir = CONFIG_DIR): string[] {
   try {
-    return readdirSync(resolve(process.cwd(), CONFIG_DIR))
+    return readdirSync(resolve(process.cwd(), dir))
       .filter((f) => f.endsWith('.config.json'))
       .sort();
   } catch {
@@ -108,8 +112,8 @@ export function listConfigs(): string[] {
   }
 }
 
-export function loadConfig(path = DEFAULT_CONFIG): Config {
-  const full = resolveConfigPath(path);
+export function loadConfig(path = DEFAULT_CONFIG, dir = CONFIG_DIR): Config {
+  const full = resolveConfigPath(path, dir);
   let raw: string;
   try {
     raw = readFileSync(full, 'utf8');
@@ -118,7 +122,7 @@ export function loadConfig(path = DEFAULT_CONFIG): Config {
   }
   const parsed = JSON.parse(raw);
   const key = backendKey(full);
-  const shared = readRegistry()[key] ?? {};
+  const shared = readRegistry(dir)[key] ?? {};
   // The config file wins only when it carries a real value. `''` is init's placeholder and cannot be
   // told apart from a deliberate "no prefix", so the registry beats it — otherwise the shared entry
   // would be dead weight on every generated file.
@@ -134,7 +138,7 @@ export function loadConfig(path = DEFAULT_CONFIG): Config {
     // (Auth0, the admin frontend) while still failing loudly on a config that is genuinely broken.
     throw Object.assign(
       new Error(
-        `specUrl not set for '${key}' — add it under "${key}" in ${CONFIG_DIR}/${BACKENDS_FILE} ` +
+        `specUrl not set for '${key}' — add it under "${key}" in ${dir}/${BACKENDS_FILE} ` +
           `(or directly in ${path}) before running.`,
       ),
       { code: NO_SPEC_URL },

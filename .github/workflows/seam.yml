@@ -29,4 +29,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           node --import "$GITHUB_WORKSPACE/node_modules/tsx/dist/loader.mjs"
-          "$GITHUB_WORKSPACE/src/cli.ts" sync --dry-run
+          "$GITHUB_WORKSPACE/src/cli.ts" sync

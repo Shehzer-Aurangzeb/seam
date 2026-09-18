@@ -1,5 +1,6 @@
-# Runs seam against the public Swagger Petstore, so a run proves the tool works on a machine
-# that is not a developer's laptop. Manual trigger and --dry-run for now: nothing is filed yet.
+# Runs seam against the public Swagger Petstore every hour and files an issue for every breaking
+# disagreement, closing each one as soon as it stops being reported. This is the working example;
+# a real frontend points the same workflow at its own config/ directory.
 name: seam
 
 on:

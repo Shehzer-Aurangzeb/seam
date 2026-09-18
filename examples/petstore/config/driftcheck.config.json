@@ -4,7 +4,7 @@
     {
       "method": "GET",
       "path": "/pet/{petId}",
-      "responseFields": ["name", "category.nonsense", "tags[].name"]
+      "responseFields": ["name", "category.name", "tags[].name"]
     },
     {
       "method": "POST",

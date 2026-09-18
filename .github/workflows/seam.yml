@@ -2,7 +2,17 @@
 # that is not a developer's laptop. Manual trigger and --dry-run for now: nothing is filed yet.
 name: seam
 
-on: workflow_dispatch
+on:
+  # Specs are served by deployed environments, so a merge webhook would fire before the deploy that
+  # changes the spec. Polling on a schedule is less code and strictly more correct.
+  schedule: [{ cron: '0 * * * *' }]
+  workflow_dispatch:
+
+# Two runs filing the same finding at once would double-open it, since the dedupe is a marker in an
+# issue body that the other run has not written yet.
+concurrency:
+  group: seam
+  cancel-in-progress: false
 
 permissions:
   issues: write

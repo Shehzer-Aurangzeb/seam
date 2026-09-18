@@ -1,0 +1,15 @@
+{
+  "globalHeaders": ["authorization"],
+  "consumes": [
+    {
+      "method": "GET",
+      "path": "/pet/{petId}",
+      "responseFields": ["name", "category.name", "tags[].name"]
+    },
+    {
+      "method": "POST",
+      "path": "/pet",
+      "requestFields": ["name", "status"]
+    }
+  ]
+}

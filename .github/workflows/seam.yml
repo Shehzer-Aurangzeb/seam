@@ -1,0 +1,32 @@
+# Runs seam against the public Swagger Petstore, so a run proves the tool works on a machine
+# that is not a developer's laptop. Manual trigger and --dry-run for now: nothing is filed yet.
+name: seam
+
+on: workflow_dispatch
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # cwd decides which config/ directory seam reads, so the example runs from its own folder
+      # while tsx and the CLI are resolved out of the checkout root.
+      - name: seam sync
+        working-directory: examples/petstore
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          node --import "$GITHUB_WORKSPACE/node_modules/tsx/dist/loader.mjs"
+          "$GITHUB_WORKSPACE/src/cli.ts" sync --dry-run

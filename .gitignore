@@ -16,3 +16,6 @@ config/backends.json
 
 .claude/settings.local.json
 .DS_Store
+
+# Local working agreement — not shared.
+CLAUDE.md

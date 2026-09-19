@@ -12,6 +12,29 @@ import { z } from 'zod';
  */
 export const PROJECTS_FILE = 'projects.json';
 
+/**
+ * When a project's backends should be re-checked.
+ *
+ * `deployment` is the correct trigger and the default: a spec is served by a RUNNING service, so a
+ * push fires before the deploy that changes it and would read the previous deploy's spec. Repos whose
+ * CD posts GitHub Deployments (both Dedicate backends do) get this for free.
+ *
+ * `push` exists for repos that post no deployment events at all, where it is the only signal
+ * available. It carries that staleness risk by definition, so the handler waits for the spec to
+ * actually change before running.
+ */
+const TriggerSchema = z.object({
+  on: z.enum(['deployment', 'push']),
+  /** deployment only: which environment counts. Omitted means any. */
+  environment: z.string().optional(),
+  /** push only: which branches count. Omitted means the usual integration branches. */
+  branches: z.array(z.string()).optional(),
+});
+
+export type Trigger = z.infer<typeof TriggerSchema>;
+
+export const DEFAULT_TRIGGER: Trigger = { on: 'deployment' };
+
 const ProjectSchema = z.object({
   /** Where issues are filed — the frontend that breaks when a backend changes. */
   issuesRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'issuesRepo must be owner/name'),
@@ -23,6 +46,7 @@ const ProjectSchema = z.object({
    * "only a backend that completed may have its issues closed" rule intact.
    */
   watch: z.array(z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'watch entries must be owner/name')),
+  trigger: TriggerSchema.optional(),
 });
 
 export const ProjectsSchema = z.record(z.string(), ProjectSchema);
